@@ -1,0 +1,20 @@
+.venv/
+.venv_broken/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+tests/_tmp/
+wheels/
+# 模型为二进制大文件，由 scripts/sync_models.py 或首次运行自动下载生成
+resources/models/
+# 构建产物 / 运行数据（不入库）
+build/
+dist/
+logs/
+*.db
+screenshots/
+screenshots_*/
+
+# 项目状态数据（记忆/会话等，不入库）
+.workbuddy/

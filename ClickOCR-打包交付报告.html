@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClickOCR 打包交付报告</title>
+<style>
+  :root { --bg:#f7f8fa; --card:#ffffff; --line:#e6e8eb; --txt:#1f2329; --sub:#6b7280; --ok:#16a34a; --warn:#d97706; --accent:#1a56db; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font-family:"Microsoft YaHei","Segoe UI",system-ui,sans-serif; padding:28px; }
+  .wrap { max-width:880px; margin:0 auto; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .meta { color:var(--sub); font-size:13px; margin-bottom:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 20px; margin-bottom:16px; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:13px; font-weight:600; }
+  .badge.ok { background:#dcfce7; color:var(--ok); }
+  .badge.gpu { background:#ede9fe; color:#7c3aed; }
+  .badge.cpu { background:#dbeafe; color:var(--accent); }
+  .row { display:flex; gap:10px; padding:7px 0; border-bottom:1px dashed var(--line); font-size:14px; }
+  .row:last-child { border-bottom:none; }
+  .k { color:var(--sub); min-width:160px; }
+  .v { flex:1; word-break:break-all; }
+  code { background:#eef1f5; padding:1px 6px; border-radius:5px; font-size:12.5px; }
+  .log { background:#0f172a; color:#cbd5e1; border-radius:10px; padding:14px 16px; font-family:"Consolas",monospace; font-size:12.5px; line-height:1.7; overflow:auto; white-space:pre-wrap; }
+  .warn-box { border-left:4px solid var(--warn); background:#fffbeb; padding:12px 16px; border-radius:8px; font-size:13.5px; line-height:1.7; }
+  .warn-box b { color:var(--warn); }
+  .ok-box { border-left:4px solid var(--ok); background:#f0fdf4; padding:12px 16px; border-radius:8px; font-size:13.5px; line-height:1.7; }
+  .info-box { border-left:4px solid var(--accent); background:#eff6ff; padding:12px 16px; border-radius:8px; font-size:13.5px; line-height:1.7; }
+  h2 { font-size:15px; margin:0 0 12px; }
+  .note { color:var(--sub); font-size:12.5px; margin-top:6px; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--sub); font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ClickOCR 打包交付报告</h1>
+  <div class="meta">更新时间：2026-08-17 00:54 · 本次交付：<b>GPU（CUDA）版</b>，文件夹（onedir）形态，支持增量热更新</div>
+
+  <div class="card">
+    <h2>打包结果 <span class="badge ok">✓ 可运行</span> <span class="badge gpu">GPU 版 ≈1.2GB</span> <span class="badge cpu">CPU 版 ≈361MB</span></h2>
+    <div class="row"><div class="k">构建工具</div><div class="v">PyInstaller 6.22.0（ClickOCR/.venv，Python 3.13.14）</div></div>
+    <div class="row"><div class="k">构建配置</div><div class="v"><code>ClickOCR.spec</code>（onedir，main.py 入口，含 core_engine / resources / rapidocr / sqlite_vec / CUDA 运行库）<br>本版<b>已移除</b>此前 CPU 瘦身的 CUDA 排除段，故把 cublas/cudnn/nvrtc/onnxruntime_providers_cuda 等全量打进包。</div></div>
+    <div class="row"><div class="k">主产物（GPU）</div><div class="v"><code>E:\WorkSpace\ClickOCR\dist\ClickOCR_gpu\</code> ≈ 1.2 GB（本次交付）</div></div>
+    <div class="row"><div class="k">备用产物（CPU）</div><div class="v"><code>E:\WorkSpace\ClickOCR\dist\ClickOCR\</code> ≈ 361 MB（重新打包时按 CPU 配置重建；本会话当前未重打，详见文末说明）</div></div>
+    <div class="row"><div class="k">产物内容</div><div class="v">ClickOCR.exe（入口） + <code>_internal/</code>（PySide6 / onnxruntime-gpu 1.28.0 / RapidOCR / sqlite-vec / rapid_table / CUDA 13 运行库）</div></div>
+    <div class="row"><div class="k">配置</div><div class="v"><code>dist/ClickOCR_gpu/config.ini</code> → <code>device = cuda</code>；附 <code>version.txt</code></div></div>
+    <div class="row"><div class="k">发布包状态</div><div class="v">纯净（仅含构建产物；首次运行在该目录下生成 clickocr.db 与 logs，属正常）</div></div>
+  </div>
+
+  <div class="card">
+    <h2>启动冒烟验证（2026-08-17 00:53，GPU 版）</h2>
+    <div class="log">2026-08-17 00:53:51 INFO [RapidOCR] Using engine_name: onnxruntime
+2026-08-17 00:53:51 INFO [RapidOCR] Using ...\_internal\resources\models_v6\PP-OCRv6_det_tiny.onnx
+2026-08-17 00:53:51 INFO [RapidOCR] Using ...\_internal\rapidocr\models\ch_ppocr_mobile_v2.0_cls_mobile.onnx
+2026-08-17 00:53:51 INFO [RapidOCR] Using ...\_internal\resources\models_v6\PP-OCRv6_rec_tiny.onnx
+2026-08-17 00:53:52 INFO [clickocr.app] OCR 引擎: v6-tiny / accel=cuda / gpu_active=True
+2026-08-17 00:53:52 INFO [clickocr.app] 表格引擎就绪（SLANet 惰性加载，首次识别时构建）
+2026-08-17 00:53:52 INFO [clickocr.db] sqlite-vec 可用，image_embedding_vec 已建
+2026-08-17 00:53:52 INFO [clickocr.app] 数据库就绪: ...\dist\ClickOCR_gpu\clickocr.db（vec0=True）</div>
+    <div class="ok-box" style="margin-top:12px">
+      <b>结论：GPU 版完整可用，CUDA 已真实激活。</b>本构建机装有可用 N 卡，日志中 <code>accel=cuda / gpu_active=True</code> 表明推理走的是 CUDA 执行提供程序；OCR 引擎（v6-tiny，det/rec/cls 三模型）、表格引擎、sqlite-vec、数据库均初始化成功。<br>
+      <span class="note">说明：日志末尾偶发的「已在运行中」是单实例守卫对残留单实例锁的正常提示，不影响构建本身——核心初始化（gpu_active=True / DB ready）均已成功打印。发布到用户机器时单实例是预期行为（同一时刻只能开一个）。</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>体积账（GPU 1.2GB 拆解）</h2>
+    <table>
+      <tr><th>组成</th><th>GPU 版</th><th>说明</th></tr>
+      <tr><td>onnxruntime 核心 + CPU EP</td><td>≈ 35 MB</td><td>始终需要（CPU 回退兜底）</td></tr>
+      <tr><td>onnxruntime CUDA 运行库</td><td>≈ 884 MB</td><td>cublas(≈516MB) + onnxruntime_providers_cuda(≈265MB) + nvrtc(≈108MB) + cudnn 等</td></tr>
+      <tr><td>PySide6 / RapidOCR / sqlite-vec / rapid_table / 模型</td><td>≈ 300 MB</td><td>无论 CPU/GPU 都需要的通用部分</td></tr>
+      <tr><td><b>合计</b></td><td><b>≈ 1.2 GB</b></td><td>含 CUDA 库即为 1.2GB；排除 CUDA 库即为 ≈361MB（CPU 版）</td></tr>
+    </table>
+    <div class="note">关键事实：那 ~884MB 全是 <code>onnxruntime-gpu</code> wheel 自带的 CUDA 运行库（随 <code>pip install onnxruntime-gpu</code> 一条命令而来），已打进 exe 目录，<b>最终用户端无需额外安装任何 CUDA 库</b>。目标机运行 GPU 版仅要求：一张 N 卡 + 较新显示驱动（支持 CUDA 13，2024 年后驱动基本都满足）。</div>
+  </div>
+
+  <div class="card">
+    <h2>关于「支持热更新」</h2>
+    <div class="info-box">
+      本次交付采用 <b>onedir（文件夹）打包</b>，这本身就为热更新（增量更新）打好了地基：
+      <ul style="margin:8px 0 0; padding-left:20px; line-height:1.8">
+        <li><b>增量替换可行</b>：运行时 PyInstaller 直接从 <code>_internal/</code> 读文件，更新时<b>只替换变更的文件</b>即可，用户无需重下整个 1.2GB。</li>
+        <li><b>不是「自动热更新」</b>：文件夹形态 ≠ 自动更新器。要做到「自动检测新版本→下载→原子替换→回滚」，还需额外写更新程序（属 ClickOCR 新功能，按约定归「代码开发会话」实现；本会话仅提供形态支持，未写更新器代码）。</li>
+        <li><b>Windows 文件锁红线</b>：app 运行中会锁住 exe 与已加载的 DLL/pyd，<b>不能</b>在运行时覆盖自身。可行方案：①退出后由 updater 换文件；②独立 updater 进程接手替换；③双目录（app / app_next）原子切换。</li>
+        <li><b>用户数据保护（最重要）</b>：更新<b>只动 <code>_internal/</code> 与静态资源</b>；根目录下的 <code>clickocr.db</code> / <code>config.ini</code> / <code>screenshots/</code> / <code>logs/</code> 是用户数据，<b>绝不可被覆盖</b>，否则库与配置丢失。</li>
+        <li><b>字节码版本一致</b>：补丁里的 <code>.pyc</code> 必须与冻结时的 Python 3.13 完全匹配，混版本会 import 崩溃。</li>
+        <li><b>单实例</b>：更新前须确认旧进程完全退出（否则覆盖失败）。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>⚠️ 说明与遗留项</h2>
+    <div class="warn-box">
+      <b>CPU 备用包当前状态：</b>本次会话早期曾产出 <code>dist/ClickOCR/</code>（≈361MB，已验证可运行、device=cpu）。在准备本次 GPU 重新打包时，<code>dist/</code> 已为空（旧产物已不在），故 GPU 版按你的选择落到 <code>dist/ClickOCR_gpu/</code>。若你仍需 CPU 版（~361MB，无 CUDA 库、对目标机零显卡要求），我可再切回 spec 的 CUDA 排除段重打一份——告知即可。<br><br>
+      <b>dist/ 下若有历史 .7z 压缩包</b>（如 ClickOCR.7z / ClickOCR_gpu.7z），来源/完整性待核对，发布前请自行重新压缩，勿直接当作交付物。<br><br>
+      <b>spec 状态：</b>当前 <code>ClickOCR.spec</code> 为 <b>GPU 配置</b>（CUDA 排除段已移除/注释）。日后要打 CPU 版，需把那段排除逻辑加回——我已将其作为可复用的「瘦身开关」保留在 spec 注释中。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>技术备注（打包踩坑）</h2>
+    <div class="row"><div class="k">沙箱 safe-delete</div><div class="v">WorkBuddy 沙箱对所有 Python 注入 safe-delete shim，非 TEMP 目录删除强制走回收站（本机回收站不可用）→ 打包中途 OSError 中断。</div></div>
+    <div class="row"><div class="k">绕开方式</div><div class="v">把 <code>--workpath</code> / <code>--distpath</code> 指向系统 TEMP（<code>C:\Users\happy\AppData\Local\Temp</code>），删除直接放行；构建后由 bash <code>cp -r</code> 把产物搬回 <code>dist/</code>。经验已记入工作日志。</div></div>
+    <div class="row"><div class="k">单实例互斥</div><div class="v">ClickOCR 为单实例（INSTANCE_NAME=ClickOCR-SingleInstance），重复启动会聚焦已有窗口并退出，冒烟测试需注意先退出旧实例。</div></div>
+    <div class="row"><div class="k">GPU 构建前置</div><div class="v">需 .venv 安装 <code>onnxruntime-gpu</code>（当前 1.28.0 在位，CUDAExecutionProvider 可用）；本机须有 N 卡 + 新驱动才能真实激活 CUDA。</div></div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,11 @@
+# ClickOCR 依赖（引擎：RapidOCR / ONNX Runtime；M2：core_engine + sqlite-vec + 表格识别）
+PySide6>=6.5
+rapidocr>=3.9          # 统一包（PP-OCRv6 支持；替代旧 rapidocr-onnxruntime）
+onnxruntime>=1.16      # GPU 加速：替换为 onnxruntime-gpu==<同版本> 并安装 nvidia-cublas/nvidia-cudnn-cu13
+mss>=9.0
+numpy>=1.24
+opencv-python>=4.8
+sqlite-vec==0.1.9      # image_embedding_vec（vec0 虚拟表，M6 启用；缺失时建库降级跳过）
+rapid_table>=3.0       # 表格识别（SLANet，模型随包内置 ~6.8MB）
+openpyxl>=3.1          # 表格导出 Excel（.xlsx）
+pynput>=1.7            # 滚动截图：全局鼠标监听 + 滚轮模拟
