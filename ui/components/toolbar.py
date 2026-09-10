@@ -20,6 +20,8 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QPushButton, QLabel,
                                QButtonGroup, QFontComboBox)
 
+from platform_compat.fonts import ui_font_family
+
 from ui.base.card_window import CardWindow
 from ui.base.texts import T
 
@@ -150,7 +152,7 @@ class _ToolsPack(QWidget):
         self._options_popup = None
         self._num_popup = None
         self.font_combo = QFontComboBox()   # 占位，懒创建浮层后替换；兼容查询接口
-        self.font_combo.setCurrentFont(QFont("Microsoft YaHei"))
+        self.font_combo.setCurrentFont(QFont(ui_font_family()))
         self.text_size = 18
         self.text_bold = False
         self.text_italic = False

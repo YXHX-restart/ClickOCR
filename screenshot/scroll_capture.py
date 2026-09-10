@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import ctypes
 import queue
-import sys
 import threading
 import time
 
@@ -21,7 +20,10 @@ import numpy as np
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QApplication
 
-WIN = sys.platform.startswith("win")
+from platform_compat import IS_WINDOWS
+from platform_compat.fonts import ui_font_family
+
+WIN = IS_WINDOWS   # 光标移动/滚轮模拟走 user32，仅 Windows 有实现
 
 _WHEEL_DELTA = 120      # 一格滚轮
 _MAX_FRAMES = 300       # 最大拼接次数兜底
@@ -300,7 +302,7 @@ class ModeMask(QWidget):
         p.setPen(QPen(QColor(255, 80, 80), 2, Qt.SolidLine))
         p.drawRect(r)
         tip = "左键：自动滚动    右键：退出    滚轮：手动滚动"
-        f = QFont("Microsoft YaHei")
+        f = QFont(ui_font_family())
         f.setPixelSize(14)
         p.setFont(f)
         fm = p.fontMetrics()

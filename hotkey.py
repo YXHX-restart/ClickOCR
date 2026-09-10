@@ -14,14 +14,15 @@
 """
 from __future__ import annotations
 
-import sys
 import ctypes
 from ctypes import wintypes
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget
 
-WIN = sys.platform.startswith("win")
+from platform_compat import IS_WINDOWS
+
+WIN = IS_WINDOWS   # 本文件即 Win32 后端实现；非 Windows 由 install() 优雅降级
 
 if WIN:
     user32 = ctypes.windll.user32

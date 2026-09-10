@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .types import OcrBox
+from core_engine.ai_pipeline import OcrBox
 
 # 统一包（PP-OCRv6 支持）：rapidocr 3.9.x（旧 PP-OCRv3 回退已移除）
 try:

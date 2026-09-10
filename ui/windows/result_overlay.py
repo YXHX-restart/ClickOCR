@@ -17,7 +17,6 @@ mapToScene 反算仍回原始像素，命中检测一致。
 from __future__ import annotations
 
 import math
-import sys
 
 import cv2
 import numpy as np
@@ -31,6 +30,8 @@ from PySide6.QtWidgets import QApplication, QGraphicsView, QGraphicsScene, \
     QFrame, QWidget
 
 from config import ConfigManager
+from platform_compat import IS_WINDOWS
+from platform_compat.fonts import ui_font_family
 from ui.core.table_detect import (          # 表格检测纯算法（无 Qt 依赖）
     _bbox, _bbox_center, build_blobs,
     _detect_table_lines, _coords_table_grid, map_cell_texts,
@@ -915,7 +916,7 @@ class ResultOverlay(QGraphicsView):
         n = len(text)
         if n == 0:
             return []
-        font = QFont("Microsoft YaHei")
+        font = QFont(ui_font_family())
         font.setPixelSize(max(8, int(round(y1 - y0))))   # 按行高近似字号
         fm = QFontMetricsF(font)
         widths = [max(1.0, fm.horizontalAdvance(ch)) for ch in text]
@@ -1942,7 +1943,7 @@ class ResultOverlay(QGraphicsView):
         同时生效，保证钉图后钉子也不挡鼠标。返回当前穿透状态。
         """
         self._through = not getattr(self, "_through", False)
-        if sys.platform.startswith("win"):
+        if IS_WINDOWS:
             try:
                 import ctypes
                 user32 = ctypes.windll.user32
@@ -1982,7 +1983,7 @@ class ResultOverlay(QGraphicsView):
         子串宽松匹配；message 直接按 MSG 结构偏移读取 message 字段（@ 偏移 8），
         避免整段 MSG.from_address 在某些环境抛异常被吞、导致回退默认穿透。
         """
-        if sys.platform.startswith("win") and b"windows" in bytes(eventType):
+        if IS_WINDOWS and b"windows" in bytes(eventType):
             try:
                 import ctypes
                 p = int(message)

@@ -6,10 +6,13 @@
   - 框选 → 截图 → OCR → 贴图浮窗（点击文字即复制）
   - OCR 完成后自动保存历史（screenshot_history + 截图/缩略图，M2）
 
-core_engine 定位（自包含优先）：
-  - 优先用 ClickOCR 内置的 `ClickOCR/core_engine/`（vendor 副本），
+core_engine 定位（自包含）：
+  - 只使用 ClickOCR 内置的 `ClickOCR/core_engine/`（vendor 副本），
     这样 ClickOCR 文件夹整体移动/分发到任何位置都能独立运行。
-  - 找不到内置副本时，兼容旧布局：core_engine 放在 ClickOCR 的上一级。
+  - 旧布局（core_engine 放在 ClickOCR 上一级）的兼容回退**已移除**（2026-09-10）：
+    那份副本已删除，留着只会掩盖「内置副本被误删」这类故障。
+  - 打包后 core_engine 被 PyInstaller 打进 exe 内的 PYZ，磁盘上没有该目录，
+    因此开发态的缺失检查只在非 frozen 时进行。
 """
 from __future__ import annotations
 
@@ -17,13 +20,17 @@ import sys
 from pathlib import Path
 
 _APP_DIR = Path(__file__).resolve().parent
-_internal_ce = _APP_DIR / "core_engine"
-if (_internal_ce / "__init__.py").exists():
-    # 自包含：用 ClickOCR 内部的 core_engine（移动即用）
-    sys.path.insert(0, str(_internal_ce))
-else:
-    # 兼容旧布局：core_engine 位于 ClickOCR 上一级（如 E:\\WorkSpace\\core_engine）
-    sys.path.insert(0, str(_APP_DIR.parent))
+_CORE_ENGINE = _APP_DIR / "core_engine"
+
+if not getattr(sys, "frozen", False):
+    # 开发态：只认内置 vendor 副本；缺失即明确报错，不再静默回退旧布局
+    if not (_CORE_ENGINE / "__init__.py").is_file():
+        raise SystemExit(
+            f"启动失败：找不到内置 core_engine 包（期望：{_CORE_ENGINE}）。\n"
+            "ClickOCR 依赖随仓库提供的 ClickOCR/core_engine/，"
+            "请补齐该目录后重试。"
+        )
+    sys.path.insert(0, str(_CORE_ENGINE))
 
 from app import App  # noqa: E402
 

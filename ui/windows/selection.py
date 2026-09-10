@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import ctypes
 import os
-import sys
 from ctypes import wintypes
 
 from PySide6.QtCore import Qt, QRect, Signal, QPoint
@@ -25,8 +24,9 @@ from PySide6.QtGui import (QPainter, QColor, QPen, QBrush, QFont,
 from PySide6.QtWidgets import QApplication, QWidget
 
 from config import ConfigManager
+from platform_compat import IS_WINDOWS
 
-WIN = sys.platform.startswith("win")
+WIN = IS_WINDOWS   # 前台窗口探测走 user32 + dwmapi，仅 Windows 有实现
 
 if WIN:
     user32 = ctypes.windll.user32

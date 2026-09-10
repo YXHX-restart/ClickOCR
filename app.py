@@ -23,15 +23,16 @@ from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 
-from core_engine.ai_pipeline import MODEL_SET_TO_TIER
+from core_engine.ai_pipeline import MODEL_SET_TO_TIER, OcrBox
 from core_engine.db_manager import DBManager, HistoryStorage
 from core_engine.logging_setup import setup_logging, get_logger
 
 from ocr import RapidOcrEngine
-from ocr.types import OcrBox
 from screenshot import ScreenshotService
 from config import ConfigManager
 from hotkey import HotkeyHost
+from platform_compat import capabilities, scroll_capture_supported
+from platform_compat.fonts import ui_font_family
 from ui.base.theme import apply_theme, resolve_theme, install_system_follow
 from ui.windows.selection import SelectionOverlay
 from ui.windows.result_overlay import ResultOverlay
@@ -194,14 +195,16 @@ class App:
     def __init__(self, app_root=None):
         self.app = QApplication(sys.argv)
         self.app.setQuitOnLastWindowClosed(False)
-        # Windows 下系统 UI 统一微软雅黑：避免 ⊛/☆ 等符号回退到
-        # 其他字体（Segoe UI Symbol 等）显示偏小/粗细不一致
+        # 系统 UI 字体由 platform_compat.fonts 决策（Windows = 微软雅黑，行为与
+        # 历史一致）：避免 ⊛/☆ 等符号回退到其他字体（Segoe UI Symbol 等）
+        # 显示偏小/粗细不一致
         # 注意：必须显式指定 9pt（QFont(family) 默认 12pt，会让文字整体变大）
-        if sys.platform == "win32":
-            self.app.setFont(QFont("Microsoft YaHei", 9))
+        self.app.setFont(QFont(ui_font_family(), 9))
 
         self.config = ConfigManager(app_root=app_root)
         setup_logging(logs_dir=self.config.logs_dir)
+        # 平台能力矩阵：哪些功能在当前平台不可用，日志里一眼可见
+        log.info("平台能力：%s", capabilities())
         # ---- UI 主题（明/暗/跟随系统）----
         apply_theme(self.app, resolve_theme(self.config))
         install_system_follow(self.app, self.config)
@@ -442,17 +445,10 @@ class App:
             if img is None:
                 log.warning("拖放图片解码失败（非图像/损坏/缺少对应解码器），跳过: %s", p)
                 continue
-            # 编码主图（遵循 [software] save_format / save_quality）
-            ok, ext, buf = self._encode_image(img)
+            # 编码主图 + 缩略图（遵循 [software] save_format / save_quality）
+            ok, ext, image_bytes, thumb_bytes = self._encode_image_pair(img)
             if not ok:
                 continue
-            image_bytes = buf.tobytes()
-            # 缩略图：复用 _save_record 第 746–751 行（宽 160px，主图同格式）
-            h, w = img.shape[:2]
-            tw = 160
-            th = max(1, int(round(h * tw / w)))
-            thumb = cv2.resize(img, (tw, th), interpolation=cv2.INTER_AREA)
-            _, _, tbuf = self._encode_image(thumb)
             # 落库：让 HistoryStorage 负责写入 screenshots/ + thumb/（不自己 copy）。
             # ocr_boxes=None → 落库为 NULL = 「从未识别」（待识别态，面板显示 "(未识别)"）。
             # 注意不能写 []：'[]' 的语义是「已识别、图中无文字」，会被当成已完成识别
@@ -462,7 +458,7 @@ class App:
             try:
                 rid = self.history.save(
                     image_bytes=image_bytes,
-                    thumb_bytes=tbuf.tobytes(),
+                    thumb_bytes=thumb_bytes,
                     ocr_text="",
                     ocr_boxes=None,
                     model_tier="",
@@ -894,7 +890,7 @@ class App:
         from screenshot.scroll_capture import (ScrollWorker, ScrollBadge,
                                                ModeMask, ModePicker,
                                                ManualCapture, StopListener)
-        if not sys.platform.startswith("win"):
+        if not scroll_capture_supported():
             self._restore_hidden()
             self.tray.showMessage("ClickOCR", "滚动截图仅支持 Windows",
                                   QSystemTrayIcon.Warning, 3000)
@@ -1279,6 +1275,26 @@ class App:
         ok, buf = cv2.imencode("." + ext, img, params)
         return ok, ext, buf
 
+    THUMB_WIDTH = 160   # 历史缩略图统一宽度（主图同格式）
+
+    def _encode_image_pair(self, img):
+        """编码主图 + 重建 160px 缩略图并编码，返回落库用的两份字节。
+
+        原先是「拖放落库 / 保存浮窗 / 收藏即保存」三处各写一份同样的
+        缩略图重建 + 二次编码（宽 160、主图同格式的算法重复三处），统一到此。
+        返回 (ok, ext, image_bytes, thumb_bytes)；主图编码失败时 ok=False、
+        其余为 None。缩略图编码失败沿用原行为（忽略，写空字节）。
+        """
+        ok, ext, buf = self._encode_image(img)
+        if not ok:
+            return False, ext, None, None
+        h, w = img.shape[:2]
+        tw = self.THUMB_WIDTH
+        th = max(1, int(round(h * tw / w)))
+        thumb = cv2.resize(img, (tw, th), interpolation=cv2.INTER_AREA)
+        _, _, tbuf = self._encode_image(thumb)
+        return True, ext, buf.tobytes(), tbuf.tobytes()
+
     def _record_ocr_payload(self, boxes):
         """boxes → 落库用 (ocr_text, ocr_boxes)。
 
@@ -1394,16 +1410,9 @@ class App:
             img = getattr(ov, "img", None)
             if img is None:
                 return
-            ok, ext, buf = self._encode_image(img)
+            ok, ext, image_bytes, thumb_bytes = self._encode_image_pair(img)
             if not ok:
                 return
-            image_bytes = buf.tobytes()
-            # 缩略图（宽 160px，与主图同格式，文件名一致）
-            h, w = img.shape[:2]
-            tw = 160
-            th = max(1, int(round(h * tw / w)))
-            thumb = cv2.resize(img, (tw, th), interpolation=cv2.INTER_AREA)
-            _, _, tbuf = self._encode_image(thumb)
             boxes = getattr(ov, "boxes", []) or []
             # M2+++ QR 存储定稿：内容进 ocr_text（[QR] 前缀行）、几何进
             # ocr_boxes（kind="qr"），不新建字段（见 _record_ocr_payload）
@@ -1411,7 +1420,7 @@ class App:
             # 执行记录（实际档位/生效设备）：本窗口跑过识别才有值，否则空串
             _tier, _dev = self._save_ocr_meta(ov)
             rid = self.history.save(
-                image_bytes=image_bytes, thumb_bytes=tbuf.tobytes(),
+                image_bytes=image_bytes, thumb_bytes=thumb_bytes,
                 ocr_text=ocr_text, ocr_boxes=ocr_boxes,
                 model_tier=_tier, device=_dev,
                 ext=ext,
@@ -1635,14 +1644,9 @@ class App:
             # 未保存过 → 保存并收藏
             try:
                 img = ov.img
-                ok, ext, buf = self._encode_image(img)
+                ok, ext, image_bytes, thumb_bytes = self._encode_image_pair(img)
                 if not ok:
                     return
-                h, w = img.shape[:2]
-                tw = 160
-                th = max(1, int(round(h * tw / w)))
-                thumb = cv2.resize(img, (tw, th), interpolation=cv2.INTER_AREA)
-                _, _, tbuf = self._encode_image(thumb)
                 ocr_text = "\n".join(b.text for b in ov.boxes)
                 ocr_boxes = [
                     {"text": b.text, "polygon": b.polygon, "score": b.score}
@@ -1652,7 +1656,7 @@ class App:
                     ocr_boxes = None   # 未识别过：写 NULL（待识别），别写成 '[]'
                 _tier, _dev = self._save_ocr_meta(ov)
                 rid = self.history.save(
-                    image_bytes=buf.tobytes(), thumb_bytes=tbuf.tobytes(),
+                    image_bytes=image_bytes, thumb_bytes=thumb_bytes,
                     ocr_text=ocr_text, ocr_boxes=ocr_boxes,
                     model_tier=_tier, device=_dev,
                     ext=ext,
