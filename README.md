@@ -21,7 +21,7 @@
 - **表格识别**：SLANet 模型（~6.8MB 内置）→ 表格面板 + Excel 导出（openpyxl）
 - **历史记录**：sqlite-vec + FTS5、日期分组、收藏（不占 FIFO）、关键词搜索、可拉伸记忆尺寸、多选拖拽
 - **二维码识别**：zxing-cpp（M3 实现，存储结构已定稿见 [docs/archive/M2+++最终修改版-QR存储定稿.md](docs/archive/M2+++最终修改版-QR存储定稿.md)）
-- **UI**：明暗双主题跟随系统、全局微软雅黑、33 条快捷键全可配置、UI 文字 JSON 表（~103 条）
+- **UI**：明暗双主题跟随系统、全局微软雅黑、快捷键 27 项全可配置（全局/截图/贴图/标注四组）、UI 文字 JSON 表（274 条）
 - **打包**：PyInstaller onedir、开机自启（winreg HKCU Run）、资源/数据分离
 
 ## 环境
@@ -32,9 +32,10 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-依赖：PySide6 / rapidocr(>=3.9) / onnxruntime / mss / opencv-python / sqlite-vec / rapid_table / openpyxl / pynput / zxing-cpp
+依赖：PySide6 / rapidocr(>=3.9) / onnxruntime / mss / numpy / opencv-python / Pillow(>=11.3) / pillow-heif / sqlite-vec / rapid_table / openpyxl / pynput / zxing-cpp（详见 `requirements.txt`）
 
-> 注：`core_engine` 为共享包，位于上级目录 `E:\WorkSpace\core_engine`，`main.py` 启动时注入 `sys.path`。
+> 注：`core_engine` 已 vendor 进本工程（`ClickOCR/core_engine/`），`main.py` 优先加载内置副本，
+> 仅在缺失时才回退到上级目录 `E:\WorkSpace\core_engine`——因此整个 ClickOCR 文件夹移动即用。
 
 ## 运行
 
@@ -56,17 +57,28 @@ pip install -r requirements.txt
 .venv\Scripts\python tests\test_engine.py
 ```
 
-> 注：`scripts/` 下大量 `_test_*.py` / `_diag_*.py` 为开发期临时验证脚本（offscreen QTest），非正式 pytest 套件，后续计划收编进 `tests/`。
+> 注：`scripts/` 下 `_test_*.py` / `_diag_*.py` / `_bench_*.py` / `_smoke_packaged.py` 为开发期验证脚本（offscreen QTest），非正式 pytest 套件，后续计划收编进 `tests/`。
 
 ## 打包
 
+推荐 **DirectML 通用版**（通吃 AMD / Intel / NVIDIA 的 DX12 显卡），须用 `onnxruntime-directml` 环境：
+
 ```bash
-.venv\Scripts\python -m PyInstaller ClickOCR.spec        # GPU 版（含 CUDA 库，~880MB）
-# 或
-.venv\Scripts\python -m PyInstaller ClickOCR_cpu.spec     # CPU 版（~360MB）
+.venv-dml\Scripts\python -m PyInstaller ClickOCR_dml.spec --noconfirm --distpath dist\ClickOCR_dml
+.venv\Scripts\python      -m PyInstaller ClickOCR.spec                              # CUDA 版（~1.9GB）
 ```
 
-打包产物：`dist\ClickOCR\ClickOCR.exe`（onedir 模式），资源读 `_internal\`、数据写 exe 旁 `config.ini` / `clickocr.db` / `screenshots/` / `logs/`。
+> `ClickOCR_cpu.spec` 路线已弃用（在 gpu 包里剔 CUDA 库得不到 DML），保留仅供备查。
+> DML spec 会在打包时把默认配置的 `ocr_device` 覆写为 `dml`（源码 config 不动），
+> 否则产物只有 `DmlExecutionProvider`，会静默回落 CPU、DirectML 形同虚设。
+
+打包产物：`dist\<名>\ClickOCR.exe`（onedir 模式），资源读 `_internal\`、数据写 exe 旁 `config.ini` / `clickocr.db` / `screenshots/` / `logs/`。
+
+产物冒烟（判定进程存活 / stderr 无 Traceback / stdout 无单实例提示 / 日志关键行 / accel 断言）：
+
+```bash
+.venv\Scripts\python scripts\_smoke_packaged.py dist\ClickOCR_dml dml
+```
 
 ## 模型
 
@@ -76,7 +88,13 @@ pip install -r requirements.txt
 - `PP-OCRv6_rec_{tiny,small,medium}.onnx`
 - `ppocrv6_dict.txt` / `ppocrv6_tiny_dict.txt`
 
-三档按 `config.ini [ocr] model_set` 选择，运行期可 `switch_model` 热切换。**禁止依赖运行时下载**——bundle 离线。
+三档按 `config.ini` 的 `[software] ocr_model`（`v6-tiny` / `v6-small` / `v6-medium`）选择，运行期可 `switch_model` 热切换。
+
+**获取方式：手动下载。** medium/small 四个文件因体积（合计 162MB）不入库，从
+[`resources/PP-OCRv6_models_manifest.txt`](resources/PP-OCRv6_models_manifest.txt) 里按名称取
+ModelScope 链接下载，校验清单中的 sha256 后放入本目录即可（tiny 两个已随仓库提供）。
+
+**禁止依赖运行时下载**——打包产物必须自带模型（bundle 离线）。
 
 ## 目录结构
 
@@ -117,7 +135,6 @@ ClickOCR/
 ### 设计文档
 
 - [docs/design/系统架构设计.md](docs/design/系统架构设计.md)
-- [docs/design/UI设计说明.md](docs/design/UI设计说明.md) — 状态栏 / 标注栏 / 三层浮窗拓扑
 - [docs/design/统一工具栏与状态栏方案.md](docs/design/统一工具栏与状态栏方案.md)
 - [docs/design/SVG图标方案.md](docs/design/SVG图标方案.md)
 
@@ -140,4 +157,3 @@ ClickOCR/
 
 - [docs/assets/blueprint-workbench.html](docs/assets/blueprint-workbench.html) — 蓝图工作台
 - [docs/assets/系统架构图.html](docs/assets/系统架构图.html)
-- [docs/assets/打包交付报告.html](docs/assets/打包交付报告.html)

@@ -6,10 +6,9 @@ __pycache__/
 *.egg-info/
 tests/_tmp/
 wheels/
-# 模型为二进制大文件，由 scripts/sync_models.py 或首次运行自动下载生成
+# 模型为二进制大文件，不入库：手动从 resources/PP-OCRv6_models_manifest.txt 的 ModelScope 链接下载
 resources/models/
-# v6 medium/small 大模型（共 162MB）同样不入库；
-# 下载地址与 sha256 见 resources/PP-OCRv6_models_manifest.txt
+# v6 medium/small 大模型（共 162MB）同样不入库；下载地址与 sha256 见同一份 manifest
 resources/models_v6/*_medium.onnx
 resources/models_v6/*_small.onnx
 # 构建产物 / 运行数据（不入库）
