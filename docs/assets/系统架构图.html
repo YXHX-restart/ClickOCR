@@ -71,6 +71,16 @@
     border-radius:7px;padding:11px 15px;font-size:12.5px;color:#6b5300;margin-top:14px
   }
   .note b{color:#7a5c00}
+  .good{
+    background:#eafaf0;border:1px solid #a7e0b5;border-left:3px solid #1a7f37;
+    border-radius:7px;padding:11px 15px;font-size:12.5px;color:#0b4a1e;margin-top:14px
+  }
+  .good b{color:#0b4a1e}
+  .warn{
+    background:#fff0ee;border:1px solid #f5c2c0;border-left:3px solid #cf222e;
+    border-radius:7px;padding:11px 15px;font-size:12.5px;color:#6e1216;margin-top:14px
+  }
+  .warn b{color:#6e1216}
   footer{
     margin-top:44px;padding-top:16px;border-top:1px solid var(--line);
     color:var(--ink3);font-size:12px;text-align:center
@@ -83,15 +93,17 @@
 
 <header>
   <h1>ClickOCR 系统架构图</h1>
-  <div class="sub">本地离线 OCR + 截图标注桌面工具 · 基于 RapidOCR（PP-OCRv6 ONNX）与 PySide6 · 依据实际源码绘制</div>
+  <div class="sub">本地离线 OCR + 截图标注桌面工具 · 基于 RapidOCR（PP-OCRv6 ONNX）与 PySide6 · 依据实际源码绘制 · 对应设计文档 v3.0</div>
   <div class="stats">
-    <div class="stat"><b>19,445</b>行源码</div>
-    <div class="stat"><b>182</b>个 Python 模块</div>
+    <div class="stat"><b>98</b>个模块</div>
+    <div class="stat"><b>20,725</b>行源码</div>
     <div class="stat"><b>5</b>层架构</div>
-    <div class="stat"><b>55</b>个 SVG 图标</div>
+    <div class="stat"><b>1</b>个平台适配层</div>
     <div class="stat"><b>11</b>张表 + 1 张 vec0 虚表</div>
+    <div class="stat"><b>274</b>条 UI 文案</div>
     <div class="stat"><b>2</b>条构建线</div>
-    <div class="stat"><b>2026-08-29</b>更新</div>
+    <div class="stat">M1 ✅ M2 ✅ <b style="font-size:13px">M3 进行中</b></div>
+    <div class="stat"><b>2026-09-10</b>更新</div>
   </div>
 </header>
 
@@ -120,7 +132,7 @@
 
     <!-- L2 -->
     <rect x="70" y="126" width="960" height="120" rx="8" fill="#fbefff" stroke="#8250df" stroke-width="1.4"/>
-    <text x="88" y="152" fill="#8250df" font-size="13" font-weight="700">L2 应用编排层 · App（app.py · 1505 行）</text>
+    <text x="88" y="152" fill="#8250df" font-size="13" font-weight="700">L2 应用编排层 · App（app.py · 1,846 行）</text>
     <text x="88" y="173" fill="#57606a" font-size="11.5">全局中枢：唯一的流程编排者，不承载具体算法，只决定「什么时候调谁、结果交给谁」</text>
     <g font-size="11">
       <rect x="88" y="186" width="150" height="46" rx="6" fill="#fff" stroke="#d0bfff"/>
@@ -150,32 +162,32 @@
 
     <!-- L3 -->
     <rect x="70" y="266" width="960" height="150" rx="8" fill="#fff1e5" stroke="#bc4c00" stroke-width="1.4"/>
-    <text x="88" y="292" fill="#bc4c00" font-size="13" font-weight="700">L3 表现层 · ui/（四层分包 · 约 7,700 行）</text>
+    <text x="88" y="292" fill="#bc4c00" font-size="13" font-weight="700">L3 表现层 · ui/（四层分包）</text>
     <text x="88" y="312" fill="#57606a" font-size="11.5">windows（主窗口）→ components（浮窗/控件）→ core（无 Qt 纯逻辑）→ base（主题/图标/文案/通用件）</text>
     <g font-size="11">
       <rect x="88" y="325" width="228" height="76" rx="6" fill="#fff" stroke="#f0c088"/>
       <text x="202" y="344" fill="#1f2328" text-anchor="middle" font-weight="600">windows · 6 个主窗口</text>
-      <text x="202" y="362" fill="#57606a" text-anchor="middle" font-size="10">result_overlay 2209 · settings 1390</text>
-      <text x="202" y="378" fill="#57606a" text-anchor="middle" font-size="10">history 902 · selection 664</text>
-      <text x="202" y="393" fill="#57606a" text-anchor="middle" font-size="10">table_panel · dev_window</text>
+      <text x="202" y="362" fill="#57606a" text-anchor="middle" font-size="10">result_overlay 2255 · settings 1438</text>
+      <text x="202" y="378" fill="#57606a" text-anchor="middle" font-size="10">history 920 · selection 664</text>
+      <text x="202" y="393" fill="#57606a" text-anchor="middle" font-size="10">table_panel 191 · dev_window 153</text>
 
       <rect x="327" y="325" width="228" height="76" rx="6" fill="#fff" stroke="#f0c088"/>
       <text x="441" y="344" fill="#1f2328" text-anchor="middle" font-weight="600">components · 浮窗与控件</text>
       <text x="441" y="362" fill="#57606a" text-anchor="middle" font-size="10">annotation 2008 · toolbar 724</text>
-      <text x="441" y="378" fill="#57606a" text-anchor="middle" font-size="10">status_strip · FloatGroup · pin</text>
-      <text x="441" y="393" fill="#57606a" text-anchor="middle" font-size="10">navigator · shortcut_panel</text>
+      <text x="441" y="378" fill="#57606a" text-anchor="middle" font-size="10">status_strip 246 · FloatGroup 102</text>
+      <text x="441" y="393" fill="#57606a" text-anchor="middle" font-size="10">pin_dot · navigator · shortcut_panel</text>
 
       <rect x="566" y="325" width="228" height="76" rx="6" fill="#fff" stroke="#f0c088"/>
       <text x="680" y="344" fill="#1f2328" text-anchor="middle" font-weight="600">core · 无 Qt 纯逻辑</text>
-      <text x="680" y="362" fill="#57606a" text-anchor="middle" font-size="10">anno_core 命令模式撤销栈</text>
-      <text x="680" y="378" fill="#57606a" text-anchor="middle" font-size="10">table_detect 几何网格推断</text>
+      <text x="680" y="362" fill="#57606a" text-anchor="middle" font-size="10">anno_core 150 命令模式撤销栈</text>
+      <text x="680" y="378" fill="#57606a" text-anchor="middle" font-size="10">table_detect 194 几何网格推断</text>
       <text x="680" y="393" fill="#8b949e" text-anchor="middle" font-size="10">（可脱离 UI 单测）</text>
 
       <rect x="805" y="325" width="207" height="76" rx="6" fill="#fff" stroke="#f0c088"/>
       <text x="908" y="344" fill="#1f2328" text-anchor="middle" font-weight="600">base · 基础设施</text>
       <text x="908" y="362" fill="#57606a" text-anchor="middle" font-size="10">theme 910（明暗/跟随系统）</text>
       <text x="908" y="378" fill="#57606a" text-anchor="middle" font-size="10">icon SVG 着色 · texts T()</text>
-      <text x="908" y="393" fill="#57606a" text-anchor="middle" font-size="10">CardWindow · widgets</text>
+      <text x="908" y="393" fill="#57606a" text-anchor="middle" font-size="10">CardWindow · widgets · hotkey_keys</text>
     </g>
 
     <!-- L4 -->
@@ -183,7 +195,7 @@
     <text x="88" y="462" fill="#1a7f37" font-size="13" font-weight="700">L4 领域服务层 · 平台能力封装（ocr/ · screenshot/ · config.py · hotkey.py）</text>
     <g font-size="11">
       <rect x="88" y="476" width="228" height="50" rx="6" fill="#fff" stroke="#a7e0b5"/>
-      <text x="202" y="495" fill="#1f2328" text-anchor="middle" font-weight="600">rapid_engine.py · 611</text>
+      <text x="202" y="495" fill="#1f2328" text-anchor="middle" font-weight="600">rapid_engine.py · 624</text>
       <text x="202" y="512" fill="#57606a" text-anchor="middle" font-size="10">PP-OCRv6 三档 · NUMA · DML 选卡</text>
 
       <rect x="327" y="476" width="228" height="50" rx="6" fill="#fff" stroke="#a7e0b5"/>
@@ -195,20 +207,20 @@
       <text x="680" y="512" fill="#57606a" text-anchor="middle" font-size="10">转发 core_engine.config</text>
 
       <rect x="805" y="476" width="207" height="50" rx="6" fill="#fff" stroke="#a7e0b5"/>
-      <text x="908" y="495" fill="#1f2328" text-anchor="middle" font-weight="600">hotkey.py · 330</text>
+      <text x="908" y="495" fill="#1f2328" text-anchor="middle" font-weight="600">hotkey.py · 331</text>
       <text x="908" y="512" fill="#57606a" text-anchor="middle" font-size="10">Win32 RegisterHotKey</text>
     </g>
 
     <!-- L5 -->
     <rect x="70" y="560" width="960" height="92" rx="8" fill="#dafbf1" stroke="#096b68" stroke-width="1.4"/>
     <text x="88" y="586" fill="#096b68" font-size="13" font-weight="700">L5 共享引擎层 · core_engine/（无 Qt 依赖 · vendor 副本）</text>
-    <text x="88" y="605" fill="#57606a" font-size="11.5">db_manager 596 · config 337 · table_engine 218 · table_export 156 · ort_runtime 135 · ai_pipeline(Protocol) 119 · qr_engine · autostart · logging_setup</text>
-    <text x="88" y="628" fill="#8b949e" font-size="11">设计意图：与 UI 解耦、可被 AI-Gallery 等其他产品复用；当前为 ClickOCR 自包含而 vendor 一份副本，外层 E:\WorkSpace\core_engine 为共享源</text>
-    <text x="88" y="644" fill="#cf222e" font-size="11">⚠ 副本双份存在，改动需同步两侧，是当前明确的维护成本点</text>
+    <text x="88" y="605" fill="#57606a" font-size="11.5">db_manager 608 · config 338 · table_engine 218 · table_export 156 · ort_runtime 135 · ai_pipeline(Protocol) 119 · <tspan fill="#096b68" font-weight="700">image_decode 108</tspan> · qr_engine · autostart · logging_setup</text>
+    <text x="88" y="628" fill="#8b949e" font-size="11">设计意图：与 UI 解耦、可被其它产品复用；当前为 ClickOCR 自包含而 vendor 一份副本 —— 2026-09-10 起它已是唯一真源（旧布局的外层共享副本已删除）</text>
+    <text x="88" y="644" fill="#096b68" font-size="11">✓ image_decode 现存两处副本（本层 / clickocr-server 自带），函数体逐字节相同、仅差文件头 docstring；服务端是独立项目、不依赖 core_engine，建议加「函数体一致性」断言作漂移哨兵</text>
 
     <!-- 外部依赖 -->
     <rect x="70" y="668" width="960" height="26" rx="6" fill="#f2f5f9" stroke="#d8dee6" stroke-dasharray="4 3"/>
-    <text x="88" y="685" fill="#57606a" font-size="11">外部依赖　PySide6 · rapidocr 3.9 · onnxruntime（cpu / gpu / directml 三选一）· OpenCV · mss · rapid_table(SLANet) · zxing-cpp · sqlite-vec · openpyxl · pynput</text>
+    <text x="88" y="685" fill="#57606a" font-size="11">外部依赖　PySide6 · rapidocr 3.9 · onnxruntime（cpu / gpu / directml 三选一）· OpenCV · mss · rapid_table(SLANet) · zxing-cpp · sqlite-vec · Pillow≥11.3 · pillow-heif · openpyxl · pynput</text>
   </svg>
   </div>
   <div class="note">
@@ -219,7 +231,7 @@
 <!-- ============ 2. 主识别数据流 ============ -->
 <section>
   <h2>二、主识别数据流（核心闭环）</h2>
-  <p class="lead">从全局热键到文字上屏的完整链路。注意线程边界：抓屏与渲染在 UI 线程，推理在工作线程，写库在 UI 线程回调。</p>
+  <p class="lead">从全局热键到文字上屏的完整链路。注意线程边界：抓屏与渲染在 UI 线程，推理在常驻工作线程，写库在 UI 线程回调。</p>
   <div class="panel">
   <svg viewBox="0 0 1080 470" width="100%" style="min-width:900px;font-family:'Microsoft YaHei',sans-serif">
     <defs>
@@ -235,7 +247,7 @@
     <rect x="0" y="180" width="1080" height="118" fill="#f4fbff" rx="6"/>
     <rect x="0" y="308" width="1080" height="150" fill="#fbfcfe" rx="6"/>
     <text x="14" y="40" fill="#8b949e" font-size="11.5" font-weight="600">UI 线程</text>
-    <text x="14" y="200" fill="#0969da" font-size="11.5" font-weight="600">工作线程（QThread）</text>
+    <text x="14" y="200" fill="#0969da" font-size="11.5" font-weight="600">常驻工作线程（长驻单线程）</text>
     <text x="14" y="328" fill="#8b949e" font-size="11.5" font-weight="600">UI 线程</text>
 
     <g>
@@ -265,7 +277,7 @@
     <g>
       <circle cx="757" cy="72" r="15" fill="#0969da"/><text x="757" y="77" fill="#fff" font-size="13" font-weight="700" text-anchor="middle">4</text>
       <text x="781" y="60" fill="#1f2328" font-size="12.5" font-weight="600">坐标换算 + 抓屏</text>
-      <text x="781" y="78" fill="#57606a" font-size="11">逻辑→物理像素 ×DPR</text>
+      <text x="781" y="78" fill="#57606a" font-size="11">逻辑→物理像素 ×dpr</text>
       <text x="781" y="93" fill="#57606a" font-size="11">延时 60ms 等遮罩消失后 mss</text>
     </g>
 
@@ -273,7 +285,7 @@
 
     <g>
       <circle cx="292" cy="240" r="15" fill="#8250df"/><text x="292" y="245" fill="#fff" font-size="13" font-weight="700" text-anchor="middle">5</text>
-      <text x="316" y="228" fill="#1f2328" font-size="12.5" font-weight="600">OcrWorker 推理</text>
+      <text x="316" y="228" fill="#1f2328" font-size="12.5" font-weight="600">OcrWorker.submit 推理</text>
       <text x="316" y="246" fill="#57606a" font-size="11">RapidOcrEngine.recognize()</text>
       <text x="316" y="261" fill="#57606a" font-size="11">PP-OCRv6 det+rec ONNX（无 cls）</text>
     </g>
@@ -289,8 +301,8 @@
 
     <g>
       <circle cx="857" cy="240" r="15" fill="#8250df"/><text x="857" y="245" fill="#fff" font-size="13" font-weight="700" text-anchor="middle">7</text>
-      <text x="881" y="228" fill="#1f2328" font-size="12.5" font-weight="600">done 信号回 UI</text>
-      <text x="881" y="246" fill="#57606a" font-size="11">Signal(object, list) 跨线程</text>
+      <text x="881" y="228" fill="#1f2328" font-size="12.5" font-weight="600">done(task_id,…) 回 UI</text>
+      <text x="881" y="246" fill="#57606a" font-size="11">带 task_id 可判定结果过期</text>
       <text x="881" y="261" fill="#8b949e" font-size="11">模型构建在原生层释放 GIL</text>
     </g>
 
@@ -316,6 +328,10 @@
     <text x="36" y="444" fill="#8a6d00" font-size="11">复制前未 OCR 完则标记 <tspan font-family="Consolas,monospace">_pending_save</tspan>，OCR 回调补写；<tspan font-family="Consolas,monospace">save_no_op_close=true</tspan> 可开启「无操作关闭也存」</text>
   </svg>
   </div>
+  <div class="good">
+    <b>为什么 worker 必须常驻（本期最重要的变更）：</b>onnxruntime 的 CUDA EP 会为<b>每个新建线程</b>分配 thread-local 的 CUDA stream / cublas·cudnn handle / workspace，<b>实测约 188 MiB/线程且线程结束后不回收</b>。旧实现每次截图 <code>new OcrWorker</code> → 新线程 → 显存逐步累积，连续截图若干次后 8GB 显存耗尽。<br>
+    现为<b>单线程常驻 + 任务槽</b>：<code>submit(task_id, img)</code> 直接覆盖未取走的旧任务（天然丢弃过期任务），CUDA workspace 只分配一次，显存稳定；<code>TableWorker</code> 出于同一原因同样常驻。
+  </div>
 </section>
 
 <!-- ============ 3. 次级数据流 ============ -->
@@ -327,9 +343,9 @@
       <h4><span class="dot" style="background:#8250df"></span>表格识别</h4>
       <p><span class="tag t-purple">Ctrl+Shift+T / 双击 / 长按</span></p>
       <ul>
+        <li>校验代次（<code>_table_gen == _img_gen</code>）才复用缓存</li>
         <li>TableWorker → SLANet 结构识别</li>
         <li>复用主引擎 <code>recognize</code> 取单元格文字</li>
-        <li>TablePreviewPanel 预览</li>
         <li>导出 Excel / Markdown / TSV / HTML</li>
         <li><b>识别完即卸载</b>模型（省 150–200MB）</li>
       </ul>
@@ -346,14 +362,14 @@
       </ul>
     </div>
     <div class="card">
-      <h4><span class="dot" style="background:#bc4c00"></span>拖放入库</h4>
-      <p><span class="tag t-orange">图片拖进历史窗口</span></p>
+      <h4><span class="dot" style="background:#bc4c00"></span>拖放图片导入</h4>
+      <p><span class="tag t-orange">拖图进历史窗口</span></p>
       <ul>
         <li><b>去重</b>：同名+同大小 → 仅置顶不新增</li>
-        <li>先落库（<code>ocr_text=""</code> 待识别态）</li>
-        <li>再<b>后台串行 OCR</b> 逐张补写</li>
-        <li>每张 done 后 refresh 面板</li>
-        <li>非 ASCII 路径用 <code>np.fromfile</code> 兜底</li>
+        <li>解码走 <code>image_decode</code>（含 HEIC/AVIF）</li>
+        <li>落库为<b>待识别态</b>（<code>ocr_boxes=NULL</code>、档位空串）</li>
+        <li><code>drop_ocr_auto</code> 开 → 后台<b>串行</b> OCR 补写</li>
+        <li>每张完成即刷新面板</li>
       </ul>
     </div>
     <div class="card">
@@ -363,7 +379,7 @@
         <li>读截图 + 解析 <code>ocr_boxes</code> JSON</li>
         <li><code>ov.history_id = rid</code> 关联<b>原记录</b></li>
         <li>后续 Ctrl+R/标注/收藏直接更新原行</li>
-        <li>恢复标注 <code>load_annotations</code></li>
+        <li><b>补识别门控</b>：仅 <code>NULL</code>（从未识别）且 <code>ocr_auto=true</code> 才自动识别</li>
         <li>图片缺失 → 提示并删除该记录</li>
       </ul>
     </div>
@@ -372,10 +388,10 @@
       <p><span class="tag t-green">命令模式</span></p>
       <ul>
         <li><code>anno_core</code>：Add/Delete/Move/Edit/Clear/Renumber</li>
-        <li>撤销栈非快照式，逐命令回滚</li>
+        <li>撤销栈非快照式、逐命令回滚（上限 500）</li>
         <li><code>_ItemFactory</code> 图元工厂（矩形/箭头/画笔/直线/马赛克/文字/序号）</li>
         <li><code>anno_to_json</code> → <code>update_annotations</code></li>
-        <li>标注后记录置顶</li>
+        <li>旧版本数据在新版打开优雅降级</li>
       </ul>
     </div>
     <div class="card">
@@ -399,6 +415,38 @@
 <section>
   <h2>四、数据模型（SQLite）</h2>
   <p class="lead">建库时一次性建齐 11 张表 + 1 张 vec0 虚表。当前仅 <code>screenshot_history</code> 在实际使用，其余为 M3–M6 预置。</p>
+
+  <div class="panel" style="margin-bottom:14px">
+    <div style="font-size:13.5px;font-weight:700;margin-bottom:10px">在用表：<code>screenshot_history</code> 的两个关键语义约定</div>
+    <div class="grid g2">
+      <div>
+        <div style="font-size:12.5px;color:var(--ink2);margin-bottom:7px"><b>① <code>ocr_boxes</code> 三态</b>（决定「打开历史图是否补识别」）</div>
+        <table>
+          <thead><tr><th style="width:100px">值</th><th style="width:110px">含义</th><th>打开历史图时</th></tr></thead>
+          <tbody>
+            <tr><td><code>NULL</code></td><td><b>从未识别</b></td><td><code>ocr_auto</code> 开 → 立即识别回填；关 → 不动</td></tr>
+            <tr><td><code>'[]'</code></td><td>已识别、<b>无文字</b></td><td>直接用，<b>不重跑模型</b></td></tr>
+            <tr><td><code>'[...]'</code></td><td>已识别、有文字</td><td>直接显示</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <div style="font-size:12.5px;color:var(--ink2);margin-bottom:7px"><b>② <code>model_tier</code> / <code>device</code> 是「执行记录」而非配置快照</b></div>
+        <table>
+          <thead><tr><th style="width:120px">字段</th><th>语义</th></tr></thead>
+          <tbody>
+            <tr><td><code>model_tier</code></td><td>这条<b>实际用的档位</b> tiny/small/medium；未识别 = <code>''</code></td></tr>
+            <tr><td><code>device</code></td><td>这条<b>实际生效的设备</b> cpu/cuda/dml；未识别 = <code>''</code></td></tr>
+            <tr><td>写入时机</td><td>INSERT 留空；<b>唯一写入点是 <code>update_ocr()</code></b>（识别刚跑完）</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="note" style="margin-top:12px">
+      <b>为什么用空串而不用 NULL：</b><code>model_tier TEXT NOT NULL</code>，而 SQLite 删不掉 NOT NULL（需重建表 + 重建 FTS 触发器/索引），且全项目 <code>init_db()</code> 只有 <code>CREATE TABLE IF NOT EXISTS</code>、<b>零处 <code>ALTER TABLE</code></b> → 空串是<b>零迁移</b>方案。<code>''</code> 与 <code>ocr_boxes IS NULL</code> 严格一一对应（同一判据，不会各说各话）。
+    </div>
+  </div>
+
   <div class="panel">
     <table>
       <thead>
@@ -408,12 +456,12 @@
         <tr>
           <td><code>screenshot_history</code></td>
           <td><span class="tag t-green">在用</span></td>
-          <td>历史记录主表。<code>screenshot_path</code>（相对路径）· <code>ocr_text</code> · <code>ocr_boxes</code>（JSON，含 kind=ocr/qr）· <code>model_tier</code> · <code>device</code> · <code>is_favorite</code> · <code>annotations</code> · <code>has_table</code> · <code>status</code>（0=未向量化）。4 个索引覆盖时间/文本/收藏/状态</td>
+          <td>历史记录主表。<code>screenshot_path</code>（相对路径）· <code>ocr_text</code>（QR 以 <code>[QR]</code> 前缀行并入）· <code>ocr_boxes</code>（三态，含 kind）· <code>model_tier</code> / <code>device</code>（执行记录）· <code>is_favorite</code>（不受 FIFO 限制）· <code>annotations</code> · <code>has_table</code> · <code>status</code>（0=未向量化）。4 个索引</td>
         </tr>
         <tr>
           <td><code>images</code></td>
           <td><span class="tag t-blue">M3 预置</span></td>
-          <td>图片主表，主键为 <code>file_path+size+mtime</code> 哈希。含 EXIF 全字段（相机/光圈/曝光/ISO/焦距）与 GPS（纬度/经度/海拔/国家/城市）</td>
+          <td>图片主表，主键为 <code>file_path+size+mtime</code> 哈希。含 EXIF 全字段（相机/光圈/曝光/ISO/焦距）与 GPS（经纬度/海拔/国家/城市）</td>
         </tr>
         <tr>
           <td><code>image_ocr</code></td>
@@ -475,20 +523,20 @@
       <p>QLocalServer 监听 <code>ClickOCR-SingleInstance</code>；二次启动检测到已存连接则发 <code>b"show"</code> 唤醒已有实例并退出，避免双开抢占全局热键。</p>
     </div>
     <div class="card">
-      <h4><span class="dot" style="background:#8250df"></span>线程模型</h4>
-      <p>4 类 QThread：<code>OcrWorker</code>（识别）、<code>TableWorker</code>（SLANet）、<code>EngineLoader</code>（后台加载模型）、<code>ScrollWorker</code>（滚屏拼接）。UI 线程全程不阻塞。</p>
+      <h4><span class="dot" style="background:#8250df"></span>线程模型（常驻复用）</h4>
+      <p>4 类 QThread，其中 <code>OcrWorker</code> / <code>TableWorker</code> 为<b>常驻单线程 + 只认最新任务</b>；<code>EngineLoader</code> 后台加载；<code>ScrollWorker</code> 按需。UI 线程全程不阻塞。</p>
     </div>
     <div class="card">
       <h4><span class="dot" style="background:#1a7f37"></span>引擎容错</h4>
-      <p>引擎初始化/加载失败 → <code>engine=None</code> + 延迟弹窗，<b>程序继续运行</b>：截图、贴图、标注照常可用，仅文字识别停用。</p>
+      <p>引擎初始化/加载失败 → <code>engine=None</code> + <b>非阻塞</b>告警弹窗，<b>程序继续运行</b>：截图、贴图、标注照常可用，仅文字识别停用。</p>
     </div>
     <div class="card">
       <h4><span class="dot" style="background:#bc4c00"></span>懒加载策略</h4>
-      <p><code>ocr_keep_alive=true</code>（默认）后台线程预加载；<code>false</code> 则首次识别才构建，启动省 200–400MB。模型热切换 <code>switch_model()</code> 只换内部引擎。</p>
+      <p><code>ocr_keep_alive=true</code>（默认）后台线程预加载；<code>false</code> 则首次识别才构建，启动省 200–400MB。模型热切换 <code>switch_model()</code> 只换内部引擎，<b>包装对象不变</b>。</p>
     </div>
     <div class="card">
       <h4><span class="dot" style="background:#096b68"></span>主题与文案外置</h4>
-      <p>明/暗/跟随系统 + <code>install_system_follow</code> 运行时切换；全部 UI 文案走 <code>ui_text.json</code> 的 <code>T()</code>，缺失回退默认值；55 个 SVG 图标按需着色。</p>
+      <p>明/暗/跟随系统 + <code>install_system_follow</code> 运行时切换；全部 UI 文案走 <code>ui_text.json</code>（274 条）的 <code>T()</code>，缺失回退默认值；SVG 图标按需着色。</p>
     </div>
     <div class="card">
       <h4><span class="dot" style="background:#cf222e"></span>窗口配额</h4>
@@ -496,22 +544,159 @@
     </div>
     <div class="card">
       <h4><span class="dot" style="background:#0969da"></span>FloatGroup 浮窗管理</h4>
-      <p>收口 z 序（<code>raise_all</code>）、绘制让位（<code>maybe_yield</code>，事件驱动替代 80ms 轮询）、位置跟随（<code>follow</code>）——消灭散落的手动 <code>raise_</code>。</p>
+      <p>收口 z 序（<code>raise_all</code>）、绘制让位（<code>maybe_yield</code>，<b>事件驱动</b>替代 80ms 轮询）、位置跟随（<code>follow</code>）——消灭散落的手动 <code>raise_</code>。</p>
     </div>
     <div class="card">
-      <h4><span class="dot" style="background:#8250df"></span>NUMA 亲和（已实现）</h4>
-      <p>多 NUMA 节点时把进程绑到节点 0：Windows 用 <code>GetLogicalProcessorInformationEx</code> + <code>SetProcessAffinityMask</code>/<code>SetThreadGroupAffinity</code>，Linux 读 <code>/sys</code> + <code>sched_setaffinity</code>。单节点零开销。</p>
+      <h4><span class="dot" style="background:#8250df"></span>NUMA 亲和</h4>
+      <p>多 NUMA 节点时把进程绑到节点 0：Windows 用 <code>GetLogicalProcessorInformationEx</code> + <code>SetProcessAffinityMask</code>/<code>SetThreadGroupAffinity</code>，Linux 读 <code>/sys</code> + <code>sched_setaffinity</code>。<b>单节点零开销</b>。</p>
     </div>
     <div class="card">
-      <h4><span class="dot" style="background:#1a7f37"></span>平台守卫</h4>
-      <p>Windows 专属：<code>hotkey.py</code>（RegisterHotKey + nativeEvent）、<code>scroll_capture.py</code>、字体策略。跨平台：NUMA 探测、ORT EP 选择。</p>
+      <h4><span class="dot" style="background:#1a7f37"></span>配置实时读取</h4>
+      <p><code>App.ocr_auto</code> 实现为 <code>@property</code> 每次读配置，而非 <code>__init__</code> 缓存 —— 设置保存后<b>同会话立即生效</b>。回归脚本含静态防线检测「<code>@property</code> 与 <code>self.X=</code> 冲突」。</p>
     </div>
   </div>
 </section>
 
-<!-- ============ 6. 构建与运行时 ============ -->
+<!-- ============ 6. 可扩展性 ============ -->
 <section>
-  <h2>六、构建线与运行时矩阵</h2>
+  <h2>六、可扩展性设计</h2>
+  <p class="lead">四个正交的扩展方向，以及三个已被识别的缺口。</p>
+  <div class="grid g3">
+    <div class="card">
+      <h4><span class="dot" style="background:#0969da"></span>换引擎</h4>
+      <p>Protocol 契约 + 单一注入点。新增一个满足 <code>recognize</code>/<code>get_info</code>/<code>switch_model</code> 的实现类，改 <code>app.py</code> 一处构造即可。业务层与 UI 只依赖 <code>OcrBox</code> 与 Protocol。</p>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#8250df"></span>加加速后端</h4>
+      <p>在 <code>DEVICE_PKG</code> / <code>PKG_INSTALL</code> / <code>_EP_HINT</code> 三张表登记即可，UI 自动出现选项（<code>available_devices()</code> 不过滤未装项，保留用户选中后触发检测/安装）。</p>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#1a7f37"></span>加标注图元</h4>
+      <p>新增一个 <code>_BaseElement</code> 子类 + 在 <code>_ItemFactory</code> 注册；若要可撤销，再加一个 <code>_Cmd</code> 子类，<b>无需改动撤销栈逻辑</b>。</p>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#bc4c00"></span>加图标</h4>
+      <p>放入 <code>resources/icons/</code> 的 SVG 即可，运行时着色 + 缓存，<b>无多分辨率位图成本</b>。</p>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#096b68"></span>数据层前瞻</h4>
+      <p>建库即建齐 11 表 + vec0，M3/M4/M6 <b>不需要 schema 迁移</b>：图库、去重、语义检索的落点均已预留。</p>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#cf222e"></span>缺口：热键无抽象</h4>
+      <p><code>HotkeyHost</code> 强绑 Win32 <code>RegisterHotKey</code> + <code>nativeEvent</code>，是 Linux / Wayland 移植的首要改造点。</p>
+    </div>
+  </div>
+  <div class="warn">
+    <b>缺口：「操作 UI」清单手工枚举。</b><code>_all_float_windows()</code> 逐类收集需要隐藏的窗口（各 overlay 的状态栏/工具栏、历史面板、设置面板、表格面板）——<b>新增一类浮窗必须同步改这个方法</b>，否则新窗口会入镜。
+  </div>
+</section>
+
+<!-- ============ 7. 性能 ============ -->
+<section>
+  <h2>七、性能设计</h2>
+  <p class="lead">按「资源占用 → 推理调优 → UI 响应」三个层面收敛。</p>
+  <div class="grid g2">
+    <div class="panel">
+      <table>
+        <thead><tr><th colspan="2">内存与显存</th></tr></thead>
+        <tbody>
+          <tr><td style="width:200px">worker 常驻复用</td><td><b>防显存泄漏</b>：CUDA EP 每线程 ~188MiB 不回收</td></tr>
+          <tr><td>引擎懒加载</td><td><code>ocr_keep_alive=false</code> 时启动省 <b>200–400MB</b></td></tr>
+          <tr><td>表格模型用后即卸</td><td>SLANet 不常驻，省 <b>150–200MB</b>（模型本身仅 ~6.8MB）</td></tr>
+          <tr><td>缩略图 160px</td><td>列表加载快、磁盘占用小</td></tr>
+          <tr><td>FIFO + 收藏豁免</td><td><code>history_max_count</code> 默认 3000，避免无限增长</td></tr>
+          <tr><td>窗口配额回收</td><td>贴图 1 / 历史图 3 / 钉图 5</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="panel">
+      <table>
+        <thead><tr><th colspan="2">CPU 与 GPU 调优</th></tr></thead>
+        <tbody>
+          <tr><td style="width:200px"><code>intra_op_num_threads</code></td><td>= <b>单 NUMA 节点物理核数</b>，避免 ORT 默认用满逻辑核导致超订</td></tr>
+          <tr><td><code>inter_op_num_threads</code></td><td>走 ORT 默认</td></tr>
+          <tr><td>NUMA 亲和</td><td>多节点绑节点 0，规避跨节点访存；单节点零开销</td></tr>
+          <tr><td>探测输入 640×640</td><td>接近真实 det 负载；用 320 会低估 GPU 收益导致误拒</td></tr>
+          <tr><td>验证真用 GPU</td><td>不存在的卡 ORT 会<b>静默回退 CPU</b>，必须查 <code>get_providers()[0]</code></td></tr>
+          <tr><td>DML 选卡</td><td>monkeypatch <code>get_ep_list</code> 注入 <code>device_id</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="panel" style="margin-top:14px">
+    <table>
+      <thead><tr><th colspan="2">UI 响应性</th></tr></thead>
+      <tbody>
+        <tr><td style="width:200px">模型后台加载</td><td><code>EngineLoader</code> 在原生层释放 GIL，加载期间 UI 完全不卡</td></tr>
+        <tr><td>抓屏延时 60ms</td><td>等遮罩彻底消失，避免把遮罩拍进去（<b>正确性优先于延迟</b>）</td></tr>
+        <tr><td>绘制让位事件驱动</td><td>由宿主 <code>mouseMove</code> 触发，替代固定 80ms 全局光标轮询</td></tr>
+        <tr><td>只认最新任务</td><td>连续截图时自动丢弃过期任务，不做无效推理</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note">
+    <b>实测加速比：</b>CUDA（v6-medium det）<b>7.54×</b>（149.5ms → 19.8ms）；DML 同机 <b>6.58×</b>（155.8ms → 23.7ms），且 DML 能额外吃下设备 1（2.37×）。两者几乎持平，故 <b>DML 通用版作为默认分发形态</b>——通吃 AMD/Intel/NVIDIA，无需用户按显卡选包；CUDA 版仅作 NVIDIA 极致性能的可选项。
+  </div>
+</section>
+
+<!-- ============ 8. 安全 ============ -->
+<section>
+  <h2>八、安全设计</h2>
+  <p class="lead">桌面端的安全模型是「完全离线、无鉴权面」，因此重点在数据隐私、输入健壮性与系统集成边界。</p>
+
+  <div class="good">
+    <b>核心保证：运行期零网络。</b>对全部源码（<code>app.py</code> / <code>config.py</code> / <code>hotkey.py</code> / <code>main.py</code> / <code>ocr/</code> / <code>ui/</code> / <code>core_engine/</code> / <code>screenshot/</code>）检索网络 API（<code>requests.</code> / <code>urllib</code> / <code>http(s)://</code> / <code>socket.</code>），<b>唯一命中</b>是 <code>ort_runtime.py</code> 里 MIGraphX 的 pip <code>-f</code> 索引参数，且仅在<b>开发模式</b>下由用户显式点「安装」才使用；打包版无 pip，直接返回提示。<br>
+    即：<b>模型随包 bundle、无遥测、无更新检查、无云端同步，截图内容不会被上传。</b>
+  </div>
+
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card">
+      <h4><span class="dot" style="background:#cf222e"></span>数据本地存储与隐私边界</h4>
+      <p>截图、缩略图、SQLite 元数据（<code>ocr_text</code> / <code>ocr_boxes</code> / <code>annotations</code>）、日志<b>全部明文落本地</b>，工具本身不做加密。</p>
+      <ul>
+        <li><b>风险提示</b>：截图常含敏感信息（身份证/合同/聊天记录），OCR 文本同样明文入库 → 安全性依赖 OS 账户隔离与磁盘加密</li>
+        <li>缓解：<code>history_max_count</code> 限制存量；<code>screenshots_dir</code> 可指向受控目录；收藏便于自主管理</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#bc4c00"></span>系统集成边界</h4>
+      <ul>
+        <li><b>单实例</b>：<code>QLocalServer</code> 本地命名管道，<b>非网络端口</b></li>
+        <li><b>热键</b>：用 <code>RegisterHotKey</code> 由系统分发，<b>不安装键盘钩子</b>（不监听任意按键、不记录击键）</li>
+        <li><b>点击穿透</b>：仅用户显式触发，随时可撤销</li>
+        <li><b>开机自启</b>：写 <b>HKCU</b>（当前用户级），<b>无需管理员权限</b>，不改系统级配置</li>
+        <li><b>打包版不自动联网装包</b></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#8250df"></span>文件路径与文件名安全</h4>
+      <ul>
+        <li>文件名替换非法字符 <code>[\\/:*?"&lt;&gt;|\r\n\t]</code> → <code>_</code>，<b>同时阻断路径穿越</b>（<code>../</code> 中的 <code>/</code> 被替换）</li>
+        <li>扩展名白名单：仅 <code>png/jpg/jpeg/bmp/webp</code>，非法回退 <code>png</code></li>
+        <li>质量参数钳制在 <code>1..100</code></li>
+        <li>删除用 <code>missing_ok=True</code>，仅删记录关联文件</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#1a7f37"></span>输入健壮性（防崩溃）</h4>
+      <ul>
+        <li>损坏/非法图片 → <code>decode_image_bytes</code> 返回 <code>None</code>，调用方跳过，<b>不抛异常</b></li>
+        <li><code>pillow_heif</code> 缺失 → HEIC/HEIF 静默不可用，不影响其它格式，<b>不在导入期抛异常</b></li>
+        <li><code>core_engine</code> 缺失 → 退化到 cv2 原生解码</li>
+        <li>模型缺失 → <code>engine=None</code> + 弹窗，程序继续运行</li>
+        <li>数据库异常 → 捕获返回 <code>False</code></li>
+      </ul>
+    </div>
+  </div>
+  <div class="note">
+    <b>剪贴板边界：</b>「点字复制」写入<b>系统剪贴板</b>（明文，任意前台程序可读）。这是截图 OCR 工具的固有属性而非缺陷，但用户应知晓：复制的敏感文本会进入剪贴板历史（若系统或第三方剪贴板管理器开启）。
+  </div>
+</section>
+
+<!-- ============ 9. 构建与运行时 ============ -->
+<section>
+  <h2>九、构建线与运行时矩阵</h2>
   <p class="lead">两条构建线源于 onnxruntime 包的互斥性；EP 能力按平台分化。</p>
   <div class="grid g2">
     <div class="panel">
@@ -519,14 +704,14 @@
         <thead><tr><th>构建线</th><th>环境 / spec</th><th>产物</th></tr></thead>
         <tbody>
           <tr>
+            <td><b>DML 通用版</b></td>
+            <td><code>.venv-dml</code>（onnxruntime-directml 1.24.4）<br><code>ClickOCR_dml.spec</code></td>
+            <td><span class="tag t-blue">推荐分发</span> <b>490MB</b> / 382 文件 · ~70s</td>
+          </tr>
+          <tr>
             <td><b>CUDA 版</b></td>
             <td><code>.venv</code>（onnxruntime-gpu 1.28.0）<br><code>ClickOCR.spec</code></td>
             <td><span class="tag t-green">NVIDIA 最优</span> ~1.9GB</td>
-          </tr>
-          <tr>
-            <td><b>DML 通用版</b></td>
-            <td><code>.venv-dml</code>（onnxruntime-directml 1.24.4）<br><code>ClickOCR_dml.spec</code></td>
-            <td><span class="tag t-blue">推荐分发</span> 462MB · ~70s</td>
           </tr>
           <tr>
             <td>纯 CPU 版</td>
@@ -547,42 +732,52 @@
     </div>
   </div>
   <div class="note">
-    <b>实测参考：</b>CUDA（v6-medium det）相对 CPU 加速 <b>6.65×</b>（125.7ms → 18.9ms，记录于 config.ini 的 <code>cuda_probe</code>）。DML 选卡经 <code>_detect_dml_device</code> 探测 + monkeypatch 注入 device_id 实现——因 rapidocr 的 ProviderConfig 不接受直接传 EP options，且 onnxruntime-directml 1.24.4 存在兼容问题。老显卡（如 930MX 不支持 DML）会自动跳过落到核显或 CPU。
+    <b>DML 构建的配置覆写（关键）：</b><code>resources/config.ini</code> 是 CUDA / DML <b>两份构建共用的同一个文件</b>（值为开发机的 <code>cuda</code>）。若不覆写，DML 包内只有 <code>DmlExecutionProvider</code>，rapidocr 告警后<b>静默回落 CPU，DirectML 形同虚设</b>。因此 <code>ClickOCR_dml.spec</code> 在打包时把 <code>ocr_device</code> 覆写为 <code>dml</code> 再打进包（写临时目录后作 <code>datas</code> 单文件项），<b>源码 config.ini 一个字不改</b> → CUDA 版与开发环境不受影响。
   </div>
 </section>
 
-<!-- ============ 7. 技术债 ============ -->
+<!-- ============ 10. 风险 ============ -->
 <section>
-  <h2>七、当前架构风险</h2>
+  <h2>十、当前架构风险</h2>
   <p class="lead">读代码时识别出的结构性问题，按影响程度排列。</p>
   <div class="panel">
     <table>
-      <thead><tr><th style="width:150px">风险</th><th style="width:78px">等级</th><th>说明与建议</th></tr></thead>
+      <thead><tr><th style="width:170px">风险</th><th style="width:78px">等级</th><th>说明与建议</th></tr></thead>
       <tbody>
         <tr>
-          <td>core_engine 双份</td>
-          <td><span class="tag t-red">高</span></td>
-          <td><code>ClickOCR/core_engine</code> 与 <code>E:\WorkSpace\core_engine</code> 两份并存。自包含收益明确，但改动需同步两侧，且易出现「改了外层、打包用内层」的静默不一致。建议：明确单向同步流程，或改为构建时拷贝</td>
+          <td>共享层多副本</td>
+          <td><span class="tag t-blue">低</span></td>
+          <td><b>2026-09-10 已处置</b>：原三处副本中的旧布局外层 <code>E:\WorkSpace\core_engine</code>（停在 8/19~20，且是带未提交改动的独立 git 仓库）已删除 —— 删前确认「无独有文件、4 个分叉文件的独有行全是被取代的旧代码、全工作区零代码引用」，并已整体备份到 <code>.workbuddy/backups/</code>（含 <code>.git</code>）。现存两处：桌面端 vendor 副本 + <code>clickocr-server/server/image_decode.py</code>（函数体逐字节相同，仅差文件头 docstring）。剩余建议：给服务端加「函数体一致性」断言作漂移哨兵；将来若要多模块共用，升级为本地 wheel / git submodule</td>
         </tr>
         <tr>
-          <td>版本历史缺失</td>
-          <td><span class="tag t-red">高</span></td>
-          <td>git 仓库于 2026-08-18 意外丢失并重建，此前历史不可恢复；当前仅 2 次提交且存在未提交改动。建议立即建立「一功能一提交」粒度</td>
+          <td>main.py 失效回退分支</td>
+          <td><span class="tag t-green">已处置</span></td>
+          <td><b>2026-09-10 已处置</b>：已删除「找不到内置 <code>core_engine/</code> 就回退上级目录」的旧布局分支，改为开发态缺失时 <code>SystemExit</code> 明确报错。<b>坑</b>：打包后 <code>core_engine</code> 在 exe 内的 PYZ 里、磁盘上没有该目录，所以这个检查必须加 <code>if not getattr(sys, "frozen", False)</code> 守卫，否则打包版会直接起不来</td>
         </tr>
         <tr>
           <td>app.py 过载</td>
           <td><span class="tag t-orange">中</span></td>
-          <td>1505 行的 App 同时承担编排、落库、窗口配额、收藏同步、拖放去重等职责。建议按「窗口管理 / 持久化 / 识别调度」拆分为协作对象</td>
+          <td>1,846 行（较上版 1,505 继续增长）同时承担编排、落库、窗口配额、收藏同步、拖放去重、worker 管理。建议按「窗口管理 / 持久化 / 识别调度」拆分为协作对象</td>
         </tr>
         <tr>
           <td>超大 UI 文件</td>
           <td><span class="tag t-orange">中</span></td>
-          <td><code>result_overlay.py</code> 2209 行、<code>annotation.py</code> 2008 行、<code>settings_panel.py</code> 1390 行。标注图元已工厂化是好的，但窗口本体仍需拆分</td>
+          <td><code>result_overlay.py</code> 2,255 行、<code>annotation.py</code> 2,008 行、<code>settings_panel.py</code> 1,438 行。图元已工厂化是好的，但窗口本体仍需拆分</td>
         </tr>
         <tr>
           <td>平台耦合</td>
-          <td><span class="tag t-orange">中</span></td>
-          <td><code>hotkey.py</code> 强绑 Win32 + nativeEvent，是 Linux 移植首要改造点。建议抽 <code>HotkeyManager</code> 抽象接口（Linux 走 X11 / GlobalShortcuts portal，Wayland 支持不一）</td>
+          <td><span class="tag t-blue">低</span></td>
+          <td><b>2026-09-10 部分处置</b>：新增 <code>platform_compat/</code> 叶子层（182 行，零第三方依赖），收拢 5 处散落的 <code>sys.platform</code> 判断 + <b>8 处 <code>Microsoft YaHei</code> 硬编码</b>（Windows 取值逐字不变），并给出能力矩阵（热键/自启/滚动截图/托盘/截图/字体）。<b>已确认无需抽象</b>：托盘（<code>QSystemTrayIcon</code>）与截图（<code>mss</code>）本就跨平台、<code>autostart.py</code> 已 try/except 降级。<b>刻意不做</b>：<code>hotkey.py</code> 的 Win32 实现体暂不切 backend —— 现在只有 Windows 一个后端，拆了是投机抽象；等真移植 Linux（X11 <code>XGrabKey</code> / Wayland GlobalShortcuts）时再切</td>
+        </tr>
+        <tr>
+          <td>Protocol 重复定义</td>
+          <td><span class="tag t-green">已处置</span></td>
+          <td><b>2026-09-10 已处置</b>：删除 <code>ocr/types.py</code>，<code>OcrBox</code>/<code>OcrEngine</code> 只由 <code>core_engine.ai_pipeline</code> 定义；<code>app.py</code>、<code>ocr/rapid_engine.py</code>、4 个测试脚本改用规范来源，<code>ocr/__init__.py</code> 仅做再导出。实测 <code>ocr.OcrBox is ai_pipeline.OcrBox</code> 为真</td>
+        </tr>
+        <tr>
+          <td>编码逻辑重复</td>
+          <td><span class="tag t-green">已处置</span></td>
+          <td><b>2026-09-10 已处置</b>：真正的重复不是 <code>_encode_image</code> 本身，而是「编码主图 + 重建 160px 缩略图 + 编码缩略图」在<b>拖放落库 / 保存浮窗 / 收藏即保存三处逐字重复</b>。抽出 <code>App._encode_image_pair()</code>（含 <code>THUMB_WIDTH = 160</code>）单一实现，三处改为调用，失败分支语义不变</td>
         </tr>
       </tbody>
     </table>
@@ -590,8 +785,8 @@
 </section>
 
 <footer>
-  ClickOCR 系统架构图 · 依据 E:\WorkSpace\ClickOCR 实际源码绘制 · 2026-08-29<br>
-  配套文档：<code>docs/design/系统架构设计.md</code>
+  ClickOCR 系统架构图 · 依据 E:\WorkSpace\ClickOCR 实际源码绘制 · 2026-09-10（对应设计文档 v3.0）<br>
+  源码规模：98 个模块 / 20,725 行 · 配套：<code>docs/design/系统架构设计.md</code>
 </footer>
 
 </div>

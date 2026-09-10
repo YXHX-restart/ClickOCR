@@ -36,6 +36,7 @@ pip install -r requirements.txt
 
 > 注：`core_engine` 已 vendor 进本工程（`ClickOCR/core_engine/`），`main.py` 优先加载内置副本，
 > 仅在缺失时才回退到上级目录 `E:\WorkSpace\core_engine`——因此整个 ClickOCR 文件夹移动即用。
+> （旧布局的上级目录副本已于 2026-09-10 删除，该回退分支现为死路径，待后续清理。）
 
 ## 运行
 
