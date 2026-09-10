@@ -6,16 +6,24 @@
   - 框选 → 截图 → OCR → 贴图浮窗（点击文字即复制）
   - OCR 完成后自动保存历史（screenshot_history + 截图/缩略图，M2）
 
-注：core_engine 为共享包，位于本目录上级（E:\\WorkSpace\\core_engine），
-启动时注入 sys.path 以支持 `import core_engine`。
+core_engine 定位（自包含优先）：
+  - 优先用 ClickOCR 内置的 `ClickOCR/core_engine/`（vendor 副本），
+    这样 ClickOCR 文件夹整体移动/分发到任何位置都能独立运行。
+  - 找不到内置副本时，兼容旧布局：core_engine 放在 ClickOCR 的上一级。
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-# core_engine 共享包路径注入（两软件各自 import，位于同级目录）
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_APP_DIR = Path(__file__).resolve().parent
+_internal_ce = _APP_DIR / "core_engine"
+if (_internal_ce / "__init__.py").exists():
+    # 自包含：用 ClickOCR 内部的 core_engine（移动即用）
+    sys.path.insert(0, str(_internal_ce))
+else:
+    # 兼容旧布局：core_engine 位于 ClickOCR 上一级（如 E:\\WorkSpace\\core_engine）
+    sys.path.insert(0, str(_APP_DIR.parent))
 
 from app import App  # noqa: E402
 

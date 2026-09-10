@@ -4,8 +4,9 @@
 本文件保持 `from config import ConfigManager` 的旧导入路径可用，
 并将 app_root 固定为 ClickOCR 根目录（config.ini 位于 resources/ 下）。
 
-段：[general] / [ocr] / [hotkey] / [selection] / [result] /
-     [preprocess] / [screenshot] / [db] / [hotkey_ext]
+段：[software] / [ui] / [hotkey_global] / [hotkey_select] /
+     [hotkey_overlay] / [hotkey_anno] / [engine] / [annotation]
+（旧结构段由 core_engine.config 的 _LEGACY_MAP 自动迁移）
 """
 from __future__ import annotations
 

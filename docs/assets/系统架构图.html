@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClickOCR 系统架构图</title>
+<style>
+  :root{
+    --bg:#f6f8fb; --card:#ffffff; --ink:#1f2328; --ink2:#57606a; --ink3:#8b949e;
+    --line:#d8dee6; --accent:#0969da; --accent-soft:#ddf4ff;
+    --purple:#8250df; --purple-soft:#fbefff;
+    --green:#1a7f37; --green-soft:#dafbe1;
+    --orange:#bc4c00; --orange-soft:#fff1e5;
+    --teal:#096b68; --teal-soft:#dafbf1;
+    --red:#cf222e; --red-soft:#ffebe9;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:32px 28px 64px;
+    background:var(--bg); color:var(--ink);
+    font-family:"Microsoft YaHei","PingFang SC","Segoe UI",system-ui,sans-serif;
+    line-height:1.65; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1180px;margin:0 auto}
+  header{margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid var(--line)}
+  h1{margin:0 0 6px;font-size:26px;letter-spacing:.3px}
+  .sub{color:var(--ink2);font-size:14px}
+  .stats{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+  .stat{
+    background:var(--card);border:1px solid var(--line);border-radius:8px;
+    padding:8px 14px;font-size:13px;color:var(--ink2)
+  }
+  .stat b{color:var(--accent);font-size:16px;margin-right:4px}
+  section{margin-top:38px}
+  h2{font-size:19px;margin:0 0 6px;display:flex;align-items:center;gap:9px}
+  h2::before{content:"";width:4px;height:17px;background:var(--accent);border-radius:2px}
+  .lead{color:var(--ink2);font-size:13.5px;margin:0 0 18px;padding-left:13px}
+  .panel{
+    background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:20px 22px;overflow-x:auto
+  }
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#f2f5f9;color:var(--ink2);font-weight:600;white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  code{
+    background:#f0f3f7;padding:1px 5px;border-radius:4px;
+    font-family:Consolas,"SF Mono",monospace;font-size:12px;color:#0550ae
+  }
+  .grid{display:grid;gap:12px}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:14px 16px}
+  .card h4{margin:0 0 7px;font-size:14px;display:flex;align-items:center;gap:7px}
+  .card p{margin:0;font-size:12.5px;color:var(--ink2)}
+  .card ul{margin:6px 0 0;padding-left:17px;font-size:12.5px;color:var(--ink2)}
+  .card li{margin:2px 0}
+  .tag{
+    display:inline-block;font-size:11px;padding:1px 7px;border-radius:20px;
+    font-weight:600;letter-spacing:.2px
+  }
+  .t-blue{background:var(--accent-soft);color:var(--accent)}
+  .t-purple{background:var(--purple-soft);color:var(--purple)}
+  .t-green{background:var(--green-soft);color:var(--green)}
+  .t-orange{background:var(--orange-soft);color:var(--orange)}
+  .t-teal{background:var(--teal-soft);color:var(--teal)}
+  .t-red{background:var(--red-soft);color:var(--red)}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
+  .note{
+    background:#fffbe6;border:1px solid #f0d98c;border-left:3px solid #d4a72c;
+    border-radius:7px;padding:11px 15px;font-size:12.5px;color:#6b5300;margin-top:14px
+  }
+  .note b{color:#7a5c00}
+  footer{
+    margin-top:44px;padding-top:16px;border-top:1px solid var(--line);
+    color:var(--ink3);font-size:12px;text-align:center
+  }
+  @media(max-width:900px){.g2,.g3{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>ClickOCR 系统架构图</h1>
+  <div class="sub">本地离线 OCR + 截图标注桌面工具 · 基于 RapidOCR（PP-OCRv6 ONNX）与 PySide6 · 依据实际源码绘制</div>
+  <div class="stats">
+    <div class="stat"><b>19,445</b>行源码</div>
+    <div class="stat"><b>182</b>个 Python 模块</div>
+    <div class="stat"><b>5</b>层架构</div>
+    <div class="stat"><b>55</b>个 SVG 图标</div>
+    <div class="stat"><b>11</b>张表 + 1 张 vec0 虚表</div>
+    <div class="stat"><b>2</b>条构建线</div>
+    <div class="stat"><b>2026-08-29</b>更新</div>
+  </div>
+</header>
+
+<!-- ============ 1. 分层架构 ============ -->
+<section>
+  <h2>一、五层单向依赖架构</h2>
+  <p class="lead">依赖严格自上而下单向流动。<code>core_engine</code> 为无 Qt 的纯逻辑共享层，已 vendor 进 ClickOCR 目录实现自包含分发。</p>
+  <div class="panel">
+  <svg viewBox="0 0 1080 706" width="100%" style="min-width:900px;font-family:'Microsoft YaHei',sans-serif">
+    <defs>
+      <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+        <path d="M0,0 L0,6.4 L7.5,3.2 z" fill="#8b949e"/>
+      </marker>
+    </defs>
+
+    <line x1="52" y1="60" x2="52" y2="618" stroke="#c6d0da" stroke-width="1.5" marker-end="url(#ar)"/>
+    <text x="30" y="340" fill="#8b949e" font-size="12" transform="rotate(-90 30 340)" text-anchor="middle">依赖方向</text>
+
+    <!-- L1 -->
+    <rect x="70" y="40" width="960" height="66" rx="8" fill="#ddf4ff" stroke="#0969da" stroke-width="1.4"/>
+    <text x="88" y="66" fill="#0969da" font-size="13" font-weight="700">L1 入口引导层</text>
+    <text x="88" y="88" fill="#57606a" font-size="11.5">main.py — sys.path 引导：优先内置 <tspan font-family="Consolas,monospace" fill="#0550ae">ClickOCR/core_engine/</tspan>，缺失时回退上级目录；随后拉起 App</text>
+    <rect x="790" y="52" width="222" height="42" rx="6" fill="#fff" stroke="#0969da" stroke-dasharray="3 2"/>
+    <text x="803" y="71" fill="#0969da" font-size="11" font-weight="600">自包含优先</text>
+    <text x="803" y="89" fill="#57606a" font-size="10.5">目录整体移动/分发即可运行</text>
+
+    <!-- L2 -->
+    <rect x="70" y="126" width="960" height="120" rx="8" fill="#fbefff" stroke="#8250df" stroke-width="1.4"/>
+    <text x="88" y="152" fill="#8250df" font-size="13" font-weight="700">L2 应用编排层 · App（app.py · 1505 行）</text>
+    <text x="88" y="173" fill="#57606a" font-size="11.5">全局中枢：唯一的流程编排者，不承载具体算法，只决定「什么时候调谁、结果交给谁」</text>
+    <g font-size="11">
+      <rect x="88" y="186" width="150" height="46" rx="6" fill="#fff" stroke="#d0bfff"/>
+      <text x="163" y="205" fill="#1f2328" text-anchor="middle" font-weight="600">单实例守护</text>
+      <text x="163" y="221" fill="#57606a" text-anchor="middle" font-size="10">QLocalServer/Socket</text>
+
+      <rect x="249" y="186" width="150" height="46" rx="6" fill="#fff" stroke="#d0bfff"/>
+      <text x="324" y="205" fill="#1f2328" text-anchor="middle" font-weight="600">托盘与热键</text>
+      <text x="324" y="221" fill="#57606a" text-anchor="middle" font-size="10">4 路全局热键</text>
+
+      <rect x="410" y="186" width="150" height="46" rx="6" fill="#fff" stroke="#d0bfff"/>
+      <text x="485" y="205" fill="#1f2328" text-anchor="middle" font-weight="600">引擎生命周期</text>
+      <text x="485" y="221" fill="#57606a" text-anchor="middle" font-size="10">懒加载 / 热切换</text>
+
+      <rect x="571" y="186" width="150" height="46" rx="6" fill="#fff" stroke="#d0bfff"/>
+      <text x="646" y="205" fill="#1f2328" text-anchor="middle" font-weight="600">窗口配额</text>
+      <text x="646" y="221" fill="#57606a" text-anchor="middle" font-size="10">贴图/历史图/钉图</text>
+
+      <rect x="732" y="186" width="150" height="46" rx="6" fill="#fff" stroke="#d0bfff"/>
+      <text x="807" y="205" fill="#1f2328" text-anchor="middle" font-weight="600">落库编排</text>
+      <text x="807" y="221" fill="#57606a" text-anchor="middle" font-size="10">用户操作才写库</text>
+
+      <rect x="893" y="186" width="119" height="46" rx="6" fill="#fff" stroke="#d0bfff"/>
+      <text x="952" y="205" fill="#1f2328" text-anchor="middle" font-weight="600">代次失效</text>
+      <text x="952" y="221" fill="#57606a" text-anchor="middle" font-size="10">_img_gen</text>
+    </g>
+
+    <!-- L3 -->
+    <rect x="70" y="266" width="960" height="150" rx="8" fill="#fff1e5" stroke="#bc4c00" stroke-width="1.4"/>
+    <text x="88" y="292" fill="#bc4c00" font-size="13" font-weight="700">L3 表现层 · ui/（四层分包 · 约 7,700 行）</text>
+    <text x="88" y="312" fill="#57606a" font-size="11.5">windows（主窗口）→ components（浮窗/控件）→ core（无 Qt 纯逻辑）→ base（主题/图标/文案/通用件）</text>
+    <g font-size="11">
+      <rect x="88" y="325" width="228" height="76" rx="6" fill="#fff" stroke="#f0c088"/>
+      <text x="202" y="344" fill="#1f2328" text-anchor="middle" font-weight="600">windows · 6 个主窗口</text>
+      <text x="202" y="362" fill="#57606a" text-anchor="middle" font-size="10">result_overlay 2209 · settings 1390</text>
+      <text x="202" y="378" fill="#57606a" text-anchor="middle" font-size="10">history 902 · selection 664</text>
+      <text x="202" y="393" fill="#57606a" text-anchor="middle" font-size="10">table_panel · dev_window</text>
+
+      <rect x="327" y="325" width="228" height="76" rx="6" fill="#fff" stroke="#f0c088"/>
+      <text x="441" y="344" fill="#1f2328" text-anchor="middle" font-weight="600">components · 浮窗与控件</text>
+      <text x="441" y="362" fill="#57606a" text-anchor="middle" font-size="10">annotation 2008 · toolbar 724</text>
+      <text x="441" y="378" fill="#57606a" text-anchor="middle" font-size="10">status_strip · FloatGroup · pin</text>
+      <text x="441" y="393" fill="#57606a" text-anchor="middle" font-size="10">navigator · shortcut_panel</text>
+
+      <rect x="566" y="325" width="228" height="76" rx="6" fill="#fff" stroke="#f0c088"/>
+      <text x="680" y="344" fill="#1f2328" text-anchor="middle" font-weight="600">core · 无 Qt 纯逻辑</text>
+      <text x="680" y="362" fill="#57606a" text-anchor="middle" font-size="10">anno_core 命令模式撤销栈</text>
+      <text x="680" y="378" fill="#57606a" text-anchor="middle" font-size="10">table_detect 几何网格推断</text>
+      <text x="680" y="393" fill="#8b949e" text-anchor="middle" font-size="10">（可脱离 UI 单测）</text>
+
+      <rect x="805" y="325" width="207" height="76" rx="6" fill="#fff" stroke="#f0c088"/>
+      <text x="908" y="344" fill="#1f2328" text-anchor="middle" font-weight="600">base · 基础设施</text>
+      <text x="908" y="362" fill="#57606a" text-anchor="middle" font-size="10">theme 910（明暗/跟随系统）</text>
+      <text x="908" y="378" fill="#57606a" text-anchor="middle" font-size="10">icon SVG 着色 · texts T()</text>
+      <text x="908" y="393" fill="#57606a" text-anchor="middle" font-size="10">CardWindow · widgets</text>
+    </g>
+
+    <!-- L4 -->
+    <rect x="70" y="436" width="960" height="104" rx="8" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.4"/>
+    <text x="88" y="462" fill="#1a7f37" font-size="13" font-weight="700">L4 领域服务层 · 平台能力封装（ocr/ · screenshot/ · config.py · hotkey.py）</text>
+    <g font-size="11">
+      <rect x="88" y="476" width="228" height="50" rx="6" fill="#fff" stroke="#a7e0b5"/>
+      <text x="202" y="495" fill="#1f2328" text-anchor="middle" font-weight="600">rapid_engine.py · 611</text>
+      <text x="202" y="512" fill="#57606a" text-anchor="middle" font-size="10">PP-OCRv6 三档 · NUMA · DML 选卡</text>
+
+      <rect x="327" y="476" width="228" height="50" rx="6" fill="#fff" stroke="#a7e0b5"/>
+      <text x="441" y="495" fill="#1f2328" text-anchor="middle" font-weight="600">screenshot/ · mss 抓屏</text>
+      <text x="441" y="512" fill="#57606a" text-anchor="middle" font-size="10">scroll_capture 481 · SIFT 拼接</text>
+
+      <rect x="566" y="476" width="228" height="50" rx="6" fill="#fff" stroke="#a7e0b5"/>
+      <text x="680" y="495" fill="#1f2328" text-anchor="middle" font-weight="600">config.py · 薄兼容层</text>
+      <text x="680" y="512" fill="#57606a" text-anchor="middle" font-size="10">转发 core_engine.config</text>
+
+      <rect x="805" y="476" width="207" height="50" rx="6" fill="#fff" stroke="#a7e0b5"/>
+      <text x="908" y="495" fill="#1f2328" text-anchor="middle" font-weight="600">hotkey.py · 330</text>
+      <text x="908" y="512" fill="#57606a" text-anchor="middle" font-size="10">Win32 RegisterHotKey</text>
+    </g>
+
+    <!-- L5 -->
+    <rect x="70" y="560" width="960" height="92" rx="8" fill="#dafbf1" stroke="#096b68" stroke-width="1.4"/>
+    <text x="88" y="586" fill="#096b68" font-size="13" font-weight="700">L5 共享引擎层 · core_engine/（无 Qt 依赖 · vendor 副本）</text>
+    <text x="88" y="605" fill="#57606a" font-size="11.5">db_manager 596 · config 337 · table_engine 218 · table_export 156 · ort_runtime 135 · ai_pipeline(Protocol) 119 · qr_engine · autostart · logging_setup</text>
+    <text x="88" y="628" fill="#8b949e" font-size="11">设计意图：与 UI 解耦、可被 AI-Gallery 等其他产品复用；当前为 ClickOCR 自包含而 vendor 一份副本，外层 E:\WorkSpace\core_engine 为共享源</text>
+    <text x="88" y="644" fill="#cf222e" font-size="11">⚠ 副本双份存在，改动需同步两侧，是当前明确的维护成本点</text>
+
+    <!-- 外部依赖 -->
+    <rect x="70" y="668" width="960" height="26" rx="6" fill="#f2f5f9" stroke="#d8dee6" stroke-dasharray="4 3"/>
+    <text x="88" y="685" fill="#57606a" font-size="11">外部依赖　PySide6 · rapidocr 3.9 · onnxruntime（cpu / gpu / directml 三选一）· OpenCV · mss · rapid_table(SLANet) · zxing-cpp · sqlite-vec · openpyxl · pynput</text>
+  </svg>
+  </div>
+  <div class="note">
+    <b>关键约束：</b><code>onnxruntime-gpu</code> 与 <code>onnxruntime-directml</code> 在 PyPI 上<b>互斥</b>（同为 <code>onnxruntime</code> 导入名），必须分 venv——这直接决定了「CUDA 版 / DML 通用版」两条独立构建线无法合并为一份产物。
+  </div>
+</section>
+
+<!-- ============ 2. 主识别数据流 ============ -->
+<section>
+  <h2>二、主识别数据流（核心闭环）</h2>
+  <p class="lead">从全局热键到文字上屏的完整链路。注意线程边界：抓屏与渲染在 UI 线程，推理在工作线程，写库在 UI 线程回调。</p>
+  <div class="panel">
+  <svg viewBox="0 0 1080 470" width="100%" style="min-width:900px;font-family:'Microsoft YaHei',sans-serif">
+    <defs>
+      <marker id="ar2" markerWidth="10" markerHeight="10" refX="7.5" refY="3.5" orient="auto">
+        <path d="M0,0 L0,7 L8,3.5 z" fill="#0969da"/>
+      </marker>
+      <marker id="ar3" markerWidth="10" markerHeight="10" refX="7.5" refY="3.5" orient="auto">
+        <path d="M0,0 L0,7 L8,3.5 z" fill="#1a7f37"/>
+      </marker>
+    </defs>
+
+    <rect x="0" y="20" width="1080" height="150" fill="#fbfcfe" rx="6"/>
+    <rect x="0" y="180" width="1080" height="118" fill="#f4fbff" rx="6"/>
+    <rect x="0" y="308" width="1080" height="150" fill="#fbfcfe" rx="6"/>
+    <text x="14" y="40" fill="#8b949e" font-size="11.5" font-weight="600">UI 线程</text>
+    <text x="14" y="200" fill="#0969da" font-size="11.5" font-weight="600">工作线程（QThread）</text>
+    <text x="14" y="328" fill="#8b949e" font-size="11.5" font-weight="600">UI 线程</text>
+
+    <g>
+      <circle cx="60" cy="72" r="15" fill="#0969da"/><text x="60" y="77" fill="#fff" font-size="13" font-weight="700" text-anchor="middle">1</text>
+      <text x="84" y="60" fill="#1f2328" font-size="12.5" font-weight="600">热键触发</text>
+      <text x="84" y="78" fill="#57606a" font-size="11">Ctrl+Shift+R / 托盘「截图」</text>
+      <text x="84" y="93" fill="#57606a" font-size="11">HotkeyHost 捕获 WM_HOTKEY</text>
+    </g>
+    <line x1="235" y1="72" x2="272" y2="72" stroke="#0969da" stroke-width="1.6" marker-end="url(#ar2)"/>
+
+    <g>
+      <circle cx="292" cy="72" r="15" fill="#0969da"/><text x="292" y="77" fill="#fff" font-size="13" font-weight="700" text-anchor="middle">2</text>
+      <text x="316" y="60" fill="#1f2328" font-size="12.5" font-weight="600">隐藏操作 UI</text>
+      <text x="316" y="78" fill="#57606a" font-size="11">状态栏/工具栏/面板入镜规避</text>
+      <text x="316" y="93" fill="#8b949e" font-size="11">图片窗体与钉子保留</text>
+    </g>
+    <line x1="470" y1="72" x2="507" y2="72" stroke="#0969da" stroke-width="1.6" marker-end="url(#ar2)"/>
+
+    <g>
+      <circle cx="527" cy="72" r="15" fill="#0969da"/><text x="527" y="77" fill="#fff" font-size="13" font-weight="700" text-anchor="middle">3</text>
+      <text x="551" y="60" fill="#1f2328" font-size="12.5" font-weight="600">全屏框选</text>
+      <text x="551" y="78" fill="#57606a" font-size="11">SelectionOverlay</text>
+      <text x="551" y="93" fill="#57606a" font-size="11">框选 / 滚动截图分支</text>
+    </g>
+    <line x1="700" y1="72" x2="737" y2="72" stroke="#0969da" stroke-width="1.6" marker-end="url(#ar2)"/>
+
+    <g>
+      <circle cx="757" cy="72" r="15" fill="#0969da"/><text x="757" y="77" fill="#fff" font-size="13" font-weight="700" text-anchor="middle">4</text>
+      <text x="781" y="60" fill="#1f2328" font-size="12.5" font-weight="600">坐标换算 + 抓屏</text>
+      <text x="781" y="78" fill="#57606a" font-size="11">逻辑→物理像素 ×DPR</text>
+      <text x="781" y="93" fill="#57606a" font-size="11">延时 60ms 等遮罩消失后 mss</text>
+    </g>
+
+    <path d="M 781 110 L 781 160 L 300 160 L 300 200" fill="none" stroke="#0969da" stroke-width="1.6" marker-end="url(#ar2)"/>
+
+    <g>
+      <circle cx="292" cy="240" r="15" fill="#8250df"/><text x="292" y="245" fill="#fff" font-size="13" font-weight="700" text-anchor="middle">5</text>
+      <text x="316" y="228" fill="#1f2328" font-size="12.5" font-weight="600">OcrWorker 推理</text>
+      <text x="316" y="246" fill="#57606a" font-size="11">RapidOcrEngine.recognize()</text>
+      <text x="316" y="261" fill="#57606a" font-size="11">PP-OCRv6 det+rec ONNX（无 cls）</text>
+    </g>
+    <line x1="530" y1="240" x2="567" y2="240" stroke="#8250df" stroke-width="1.6" marker-end="url(#ar2)"/>
+
+    <g>
+      <circle cx="587" cy="240" r="15" fill="#8250df"/><text x="587" y="245" fill="#fff" font-size="13" font-weight="700" text-anchor="middle">6</text>
+      <text x="611" y="228" fill="#1f2328" font-size="12.5" font-weight="600">QR 合并（可选）</text>
+      <text x="611" y="246" fill="#57606a" font-size="11">zxing 解码 → kind="qr" 并入</text>
+      <text x="611" y="261" fill="#8b949e" font-size="11">[software] enable_qr 控制</text>
+    </g>
+    <line x1="800" y1="240" x2="837" y2="240" stroke="#8250df" stroke-width="1.6" marker-end="url(#ar2)"/>
+
+    <g>
+      <circle cx="857" cy="240" r="15" fill="#8250df"/><text x="857" y="245" fill="#fff" font-size="13" font-weight="700" text-anchor="middle">7</text>
+      <text x="881" y="228" fill="#1f2328" font-size="12.5" font-weight="600">done 信号回 UI</text>
+      <text x="881" y="246" fill="#57606a" font-size="11">Signal(object, list) 跨线程</text>
+      <text x="881" y="261" fill="#8b949e" font-size="11">模型构建在原生层释放 GIL</text>
+    </g>
+
+    <path d="M 881 280 L 881 292 L 500 292 L 500 308" fill="none" stroke="#1a7f37" stroke-width="1.6" marker-end="url(#ar3)"/>
+
+    <g>
+      <circle cx="484" cy="360" r="15" fill="#1a7f37"/><text x="484" y="365" fill="#fff" font-size="13" font-weight="700" text-anchor="middle">8</text>
+      <text x="508" y="348" fill="#1f2328" font-size="12.5" font-weight="600">渲染与交互</text>
+      <text x="508" y="366" fill="#57606a" font-size="11">ResultOverlay 画框 + 点字复制</text>
+      <text x="508" y="381" fill="#57606a" font-size="11">状态栏/工具栏由 FloatGroup 管</text>
+    </g>
+    <line x1="700" y1="360" x2="737" y2="360" stroke="#1a7f37" stroke-width="1.6" marker-end="url(#ar3)"/>
+
+    <g>
+      <circle cx="757" cy="360" r="15" fill="#1a7f37"/><text x="757" y="365" fill="#fff" font-size="13" font-weight="700" text-anchor="middle">9</text>
+      <text x="781" y="348" fill="#1f2328" font-size="12.5" font-weight="600">操作触发落库</text>
+      <text x="781" y="366" fill="#57606a" font-size="11">HistoryStorage.save：图 + 160px 缩略图</text>
+      <text x="781" y="381" fill="#57606a" font-size="11">+ DB 行 + FIFO 清理</text>
+    </g>
+
+    <rect x="20" y="410" width="1040" height="42" rx="6" fill="#fffbe6" stroke="#f0d98c"/>
+    <text x="36" y="428" fill="#6b5300" font-size="11.5" font-weight="600">落库时机：不自动写库，仅当用户「操作过」才落盘 —— 复制文字 / 标注 / 收藏 / 钉图 / Ctrl+R / 点完成，任一动作即触发</text>
+    <text x="36" y="444" fill="#8a6d00" font-size="11">复制前未 OCR 完则标记 <tspan font-family="Consolas,monospace">_pending_save</tspan>，OCR 回调补写；<tspan font-family="Consolas,monospace">save_no_op_close=true</tspan> 可开启「无操作关闭也存」</text>
+  </svg>
+  </div>
+</section>
+
+<!-- ============ 3. 次级数据流 ============ -->
+<section>
+  <h2>三、次级数据流</h2>
+  <p class="lead">主闭环之外的六条独立链路，各自有明确的触发条件与失效边界。</p>
+  <div class="grid g3">
+    <div class="card">
+      <h4><span class="dot" style="background:#8250df"></span>表格识别</h4>
+      <p><span class="tag t-purple">Ctrl+Shift+T / 双击 / 长按</span></p>
+      <ul>
+        <li>TableWorker → SLANet 结构识别</li>
+        <li>复用主引擎 <code>recognize</code> 取单元格文字</li>
+        <li>TablePreviewPanel 预览</li>
+        <li>导出 Excel / Markdown / TSV / HTML</li>
+        <li><b>识别完即卸载</b>模型（省 150–200MB）</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#096b68"></span>滚动截图</h4>
+      <p><span class="tag t-teal">框选后按 R</span></p>
+      <ul>
+        <li>三选遮罩：左键自动 / 右键退出 / 滚轮手动</li>
+        <li>ScrollWorker 滚屏逐帧抓取</li>
+        <li><b>SIFT 特征匹配</b>拼接去重</li>
+        <li>长图 <code>fit_to_screen()</code> 等比入屏</li>
+        <li>仅 Windows（pynput 模拟滚轮）</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#bc4c00"></span>拖放入库</h4>
+      <p><span class="tag t-orange">图片拖进历史窗口</span></p>
+      <ul>
+        <li><b>去重</b>：同名+同大小 → 仅置顶不新增</li>
+        <li>先落库（<code>ocr_text=""</code> 待识别态）</li>
+        <li>再<b>后台串行 OCR</b> 逐张补写</li>
+        <li>每张 done 后 refresh 面板</li>
+        <li>非 ASCII 路径用 <code>np.fromfile</code> 兜底</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#0969da"></span>历史恢复</h4>
+      <p><span class="tag t-blue">FR-17</span></p>
+      <ul>
+        <li>读截图 + 解析 <code>ocr_boxes</code> JSON</li>
+        <li><code>ov.history_id = rid</code> 关联<b>原记录</b></li>
+        <li>后续 Ctrl+R/标注/收藏直接更新原行</li>
+        <li>恢复标注 <code>load_annotations</code></li>
+        <li>图片缺失 → 提示并删除该记录</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#1a7f37"></span>标注持久化</h4>
+      <p><span class="tag t-green">命令模式</span></p>
+      <ul>
+        <li><code>anno_core</code>：Add/Delete/Move/Edit/Clear/Renumber</li>
+        <li>撤销栈非快照式，逐命令回滚</li>
+        <li><code>_ItemFactory</code> 图元工厂（矩形/箭头/画笔/直线/马赛克/文字/序号）</li>
+        <li><code>anno_to_json</code> → <code>update_annotations</code></li>
+        <li>标注后记录置顶</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#cf222e"></span>钉图与穿透</h4>
+      <p><span class="tag t-red">Alt+F</span></p>
+      <ul>
+        <li>钉图：图片保留 + 状态栏/工具栏隐藏</li>
+        <li>右下角 PinDot 钉子（32×32）</li>
+        <li>钉图移出 <code>_overlays</code> 独立配额</li>
+        <li>Alt+F 全局切换点击穿透</li>
+        <li>穿透时鼠标落到桌面，热键仍可取消</li>
+      </ul>
+    </div>
+  </div>
+  <div class="note">
+    <b>代次失效机制：</b>App 维护 <code>_img_gen</code>（图片代次）与 <code>_table_gen</code>（表格结果代次）。新图进入或 Ctrl+R 后 <code>_img_gen += 1</code>，使缓存的 SLANet 结果与「待开窗」请求一并作废，避免「长按表格却显示上一张图的识别结果」这类串图问题。
+  </div>
+</section>
+
+<!-- ============ 4. 数据模型 ============ -->
+<section>
+  <h2>四、数据模型（SQLite）</h2>
+  <p class="lead">建库时一次性建齐 11 张表 + 1 张 vec0 虚表。当前仅 <code>screenshot_history</code> 在实际使用，其余为 M3–M6 预置。</p>
+  <div class="panel">
+    <table>
+      <thead>
+        <tr><th style="width:190px">表</th><th style="width:96px">状态</th><th>用途与关键字段</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>screenshot_history</code></td>
+          <td><span class="tag t-green">在用</span></td>
+          <td>历史记录主表。<code>screenshot_path</code>（相对路径）· <code>ocr_text</code> · <code>ocr_boxes</code>（JSON，含 kind=ocr/qr）· <code>model_tier</code> · <code>device</code> · <code>is_favorite</code> · <code>annotations</code> · <code>has_table</code> · <code>status</code>（0=未向量化）。4 个索引覆盖时间/文本/收藏/状态</td>
+        </tr>
+        <tr>
+          <td><code>images</code></td>
+          <td><span class="tag t-blue">M3 预置</span></td>
+          <td>图片主表，主键为 <code>file_path+size+mtime</code> 哈希。含 EXIF 全字段（相机/光圈/曝光/ISO/焦距）与 GPS（纬度/经度/海拔/国家/城市）</td>
+        </tr>
+        <tr>
+          <td><code>image_ocr</code></td>
+          <td><span class="tag t-blue">M3 预置</span></td>
+          <td>每行文字一条（RAG 天然 chunk）。<code>text_content</code> · <code>polygon_json</code> · <code>confidence</code> · <code>model_tier</code></td>
+        </tr>
+        <tr>
+          <td><code>image_tags</code></td>
+          <td><span class="tag t-blue">M3 预置</span></td>
+          <td>三源标签：manual / ocr / ai，联合主键 (image_id, tag)，NOCASE 排序</td>
+        </tr>
+        <tr>
+          <td><code>image_ocr_extend</code></td>
+          <td><span class="tag t-orange">M4 预置</span></td>
+          <td>区域框选重识别结果（region_x/y/w/h + ocr_texts），级联删除</td>
+        </tr>
+        <tr>
+          <td><code>image_search</code></td>
+          <td><span class="tag t-blue">FTS5 虚表</span></td>
+          <td>trigram 分词全局搜索，聚合 OCR/caption/tag 三源。<b>4 个触发器</b>自动同步（ocr 增删、caption 更新、tag 插入）</td>
+        </tr>
+        <tr>
+          <td><code>table_cache</code></td>
+          <td><span class="tag t-orange">M4 预置</span></td>
+          <td>表格识别结果缓存（table_result JSON，按 image_id+model_tier 索引）</td>
+        </tr>
+        <tr>
+          <td><code>image_embedding</code></td>
+          <td><span class="tag t-purple">M6 预置</span></td>
+          <td>向量元数据，每图两条：<code>image</code>（CLIP 图向量）/ <code>text</code>（BGE 文本向量）。唯一约束 (image_id, entry_type, model)</td>
+        </tr>
+        <tr>
+          <td><code>image_embedding_vec</code></td>
+          <td><span class="tag t-purple">M6 · vec0</span></td>
+          <td>sqlite-vec 虚表 <code>vec0(embedding float[512])</code>。按扩展可用性在 Python 层动态创建，缺失则降级跳过</td>
+        </tr>
+        <tr>
+          <td><code>image_hash</code></td>
+          <td><span class="tag t-orange">M4 预置</span></td>
+          <td>感知哈希去重（phash / dhash / ahash），主键 (image_id, hash_type)</td>
+        </tr>
+        <tr>
+          <td><code>image_layout</code></td>
+          <td><span class="tag t-blue">可选</span></td>
+          <td>DocLayout-YOLO 版面分析结果（layout_json）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============ 5. 跨切面 ============ -->
+<section>
+  <h2>五、跨切面关注点</h2>
+  <p class="lead">贯穿各层的横切机制——这些是理解代码行为的隐性契约。</p>
+  <div class="grid g3">
+    <div class="card">
+      <h4><span class="dot" style="background:#0969da"></span>单实例</h4>
+      <p>QLocalServer 监听 <code>ClickOCR-SingleInstance</code>；二次启动检测到已存连接则发 <code>b"show"</code> 唤醒已有实例并退出，避免双开抢占全局热键。</p>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#8250df"></span>线程模型</h4>
+      <p>4 类 QThread：<code>OcrWorker</code>（识别）、<code>TableWorker</code>（SLANet）、<code>EngineLoader</code>（后台加载模型）、<code>ScrollWorker</code>（滚屏拼接）。UI 线程全程不阻塞。</p>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#1a7f37"></span>引擎容错</h4>
+      <p>引擎初始化/加载失败 → <code>engine=None</code> + 延迟弹窗，<b>程序继续运行</b>：截图、贴图、标注照常可用，仅文字识别停用。</p>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#bc4c00"></span>懒加载策略</h4>
+      <p><code>ocr_keep_alive=true</code>（默认）后台线程预加载；<code>false</code> 则首次识别才构建，启动省 200–400MB。模型热切换 <code>switch_model()</code> 只换内部引擎。</p>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#096b68"></span>主题与文案外置</h4>
+      <p>明/暗/跟随系统 + <code>install_system_follow</code> 运行时切换；全部 UI 文案走 <code>ui_text.json</code> 的 <code>T()</code>，缺失回退默认值；55 个 SVG 图标按需着色。</p>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#cf222e"></span>窗口配额</h4>
+      <p>三类独立配额：贴图 <code>max_history_windows</code>=1、历史图 <code>max_hist_windows</code>=3、钉图 <code>max_pin_windows</code>=5（上限 20）。超限从最旧回收。</p>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#0969da"></span>FloatGroup 浮窗管理</h4>
+      <p>收口 z 序（<code>raise_all</code>）、绘制让位（<code>maybe_yield</code>，事件驱动替代 80ms 轮询）、位置跟随（<code>follow</code>）——消灭散落的手动 <code>raise_</code>。</p>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#8250df"></span>NUMA 亲和（已实现）</h4>
+      <p>多 NUMA 节点时把进程绑到节点 0：Windows 用 <code>GetLogicalProcessorInformationEx</code> + <code>SetProcessAffinityMask</code>/<code>SetThreadGroupAffinity</code>，Linux 读 <code>/sys</code> + <code>sched_setaffinity</code>。单节点零开销。</p>
+    </div>
+    <div class="card">
+      <h4><span class="dot" style="background:#1a7f37"></span>平台守卫</h4>
+      <p>Windows 专属：<code>hotkey.py</code>（RegisterHotKey + nativeEvent）、<code>scroll_capture.py</code>、字体策略。跨平台：NUMA 探测、ORT EP 选择。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 6. 构建与运行时 ============ -->
+<section>
+  <h2>六、构建线与运行时矩阵</h2>
+  <p class="lead">两条构建线源于 onnxruntime 包的互斥性；EP 能力按平台分化。</p>
+  <div class="grid g2">
+    <div class="panel">
+      <table>
+        <thead><tr><th>构建线</th><th>环境 / spec</th><th>产物</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><b>CUDA 版</b></td>
+            <td><code>.venv</code>（onnxruntime-gpu 1.28.0）<br><code>ClickOCR.spec</code></td>
+            <td><span class="tag t-green">NVIDIA 最优</span> ~1.9GB</td>
+          </tr>
+          <tr>
+            <td><b>DML 通用版</b></td>
+            <td><code>.venv-dml</code>（onnxruntime-directml 1.24.4）<br><code>ClickOCR_dml.spec</code></td>
+            <td><span class="tag t-blue">推荐分发</span> 462MB · ~70s</td>
+          </tr>
+          <tr>
+            <td>纯 CPU 版</td>
+            <td colspan="2"><span class="tag t-red">已废弃</span> <code>ClickOCR_cpu.spec</code> 路线无效——从 gpu 包剔 CUDA 库永远得不到 DML</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="panel">
+      <table>
+        <thead><tr><th>平台</th><th>EP 选项</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>Windows</td><td><code>cpu · cuda · dml</code></td><td>DML 通吃 AMD/Intel/NVIDIA DX12（WDDM 2.4+）</td></tr>
+          <tr><td>Linux</td><td><code>cpu · cuda · migraphx · openvino</code></td><td>无 DirectML；AMD 走 MIGraphX（ROCm 6.4+），Intel 走 OpenVINO</td></tr>
+          <tr><td colspan="3" style="font-size:12px;color:#57606a">打包版已捆绑运行时，EP 不可用即判定为设备/驱动不支持并自动回退 CPU；开发模式可 pip 自动换包。</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="note">
+    <b>实测参考：</b>CUDA（v6-medium det）相对 CPU 加速 <b>6.65×</b>（125.7ms → 18.9ms，记录于 config.ini 的 <code>cuda_probe</code>）。DML 选卡经 <code>_detect_dml_device</code> 探测 + monkeypatch 注入 device_id 实现——因 rapidocr 的 ProviderConfig 不接受直接传 EP options，且 onnxruntime-directml 1.24.4 存在兼容问题。老显卡（如 930MX 不支持 DML）会自动跳过落到核显或 CPU。
+  </div>
+</section>
+
+<!-- ============ 7. 技术债 ============ -->
+<section>
+  <h2>七、当前架构风险</h2>
+  <p class="lead">读代码时识别出的结构性问题，按影响程度排列。</p>
+  <div class="panel">
+    <table>
+      <thead><tr><th style="width:150px">风险</th><th style="width:78px">等级</th><th>说明与建议</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>core_engine 双份</td>
+          <td><span class="tag t-red">高</span></td>
+          <td><code>ClickOCR/core_engine</code> 与 <code>E:\WorkSpace\core_engine</code> 两份并存。自包含收益明确，但改动需同步两侧，且易出现「改了外层、打包用内层」的静默不一致。建议：明确单向同步流程，或改为构建时拷贝</td>
+        </tr>
+        <tr>
+          <td>版本历史缺失</td>
+          <td><span class="tag t-red">高</span></td>
+          <td>git 仓库于 2026-08-18 意外丢失并重建，此前历史不可恢复；当前仅 2 次提交且存在未提交改动。建议立即建立「一功能一提交」粒度</td>
+        </tr>
+        <tr>
+          <td>app.py 过载</td>
+          <td><span class="tag t-orange">中</span></td>
+          <td>1505 行的 App 同时承担编排、落库、窗口配额、收藏同步、拖放去重等职责。建议按「窗口管理 / 持久化 / 识别调度」拆分为协作对象</td>
+        </tr>
+        <tr>
+          <td>超大 UI 文件</td>
+          <td><span class="tag t-orange">中</span></td>
+          <td><code>result_overlay.py</code> 2209 行、<code>annotation.py</code> 2008 行、<code>settings_panel.py</code> 1390 行。标注图元已工厂化是好的，但窗口本体仍需拆分</td>
+        </tr>
+        <tr>
+          <td>平台耦合</td>
+          <td><span class="tag t-orange">中</span></td>
+          <td><code>hotkey.py</code> 强绑 Win32 + nativeEvent，是 Linux 移植首要改造点。建议抽 <code>HotkeyManager</code> 抽象接口（Linux 走 X11 / GlobalShortcuts portal，Wayland 支持不一）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<footer>
+  ClickOCR 系统架构图 · 依据 E:\WorkSpace\ClickOCR 实际源码绘制 · 2026-08-29<br>
+  配套文档：<code>docs/design/系统架构设计.md</code>
+</footer>
+
+</div>
+</body>
+</html>

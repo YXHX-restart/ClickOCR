@@ -17,6 +17,7 @@ class OcrBox:
     text: str                          # 识别文本
     polygon: List[List[int]]           # 4 顶点坐标 [[x, y], ...]
     score: float                       # 置信度 0~1
+    kind: str = "ocr"                  # 来源标记：ocr=文字 | qr=二维码/条码（M2+++）
 
 
 @runtime_checkable

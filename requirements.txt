@@ -5,7 +5,10 @@ onnxruntime>=1.16      # GPU 加速：替换为 onnxruntime-gpu==<同版本> 并
 mss>=9.0
 numpy>=1.24
 opencv-python>=4.8
+Pillow>=11.3           # 图像解码回退：AVIF 由 Pillow>=11.3 内置支持（rapidocr 已间接依赖）
+pillow-heif>=1.7       # HEIC/HEIF 解码（自带 libheif）；未安装时 .heic/.heif 拖入会跳过
 sqlite-vec==0.1.9      # image_embedding_vec（vec0 虚拟表，M6 启用；缺失时建库降级跳过）
 rapid_table>=3.0       # 表格识别（SLANet，模型随包内置 ~6.8MB）
 openpyxl>=3.1          # 表格导出 Excel（.xlsx）
 pynput>=1.7            # 滚动截图：全局鼠标监听 + 滚轮模拟
+zxing-cpp>=3.1         # 二维码/条码识别（M3 T4；import 名 zxingcpp）

@@ -33,11 +33,14 @@ if WIN:
     MOD_CTRL, MOD_ALT, MOD_SHIFT, MOD_WIN = 0x0002, 0x0001, 0x0004, 0x0008
     WM_HOTKEY = 0x0312
 
-    # 字母 + 数字 + 反引号（` / ~，Tab 上方键，VK_OEM_3）
-    _VK = {c: 0x41 + i for i, c in enumerate("abcdefghijklmnopqrstuvwxyz")}
-    _VK.update({str(d): 0x30 + d for d in range(10)})
-    _VK["`"] = 0xC0
-    _VK["~"] = 0xC0
+    # 字母 / 数字 / 反引号 / F 键 / 方向键 / 空格 / 常用标点。
+    # token → VK 映射收敛到 ui.base.hotkey_keys（与本地快捷键取框/解析共用一份表）
+    from ui.base.hotkey_keys import token_to_vk as _token_to_vk
+    # 字母/数字逐字符作为独立 token（不能连成一个字符串，否则会被当成一个键）
+    _VK = {p: _token_to_vk(p) for p in
+           (*"abcdefghijklmnopqrstuvwxyz", *[str(d) for d in range(10)],
+            *"f1 f2 f3 f4 f5 f6 f7 f8 f9 f10 f11 f12 "
+             "left right up down space ` ~ - = [ ] ; ' , . / \\".split())}
 
     # 自绘 MSG 结构（wintypes.MSG 在部分 Python 版本缺字段，且需 wParam 区分多热键）
     class _MSG(ctypes.Structure):

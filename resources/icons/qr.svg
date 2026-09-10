@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- 透明底二维码（反色显示：corner 按钮底固定深色，白色码清晰可见） -->
+  <g fill="currentColor" fill-rule="evenodd">
+    <path d="M4 4h6v6H4zm1 1v4h4V5zM14 4h6v6h-6zm1 1v4h4V6zM4 14h6v6H4zm1 1v4h4v-4z"/>
+  </g>
+  <g fill="currentColor">
+    <path d="M6 6h2v2H6zM16 6h2v2h-2zM6 16h2v2H6zM12 4h2v2h-2zM11.5 11.5h2.5v2.5h-2.5zM14.5 10h2.5v2h-2.5zM14.5 14h2v2h-2zM17.5 14.5h2v2.5h-2zM11 16.5h2.5v2H11z"/>
+  </g>
+</svg>

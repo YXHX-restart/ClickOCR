@@ -1,0 +1,47 @@
+PP-OCRv6 模型清单（下载源：ModelScope RapidAI/RapidOCR @ v3.9.2）
+================================================================
+
+生成时间 : 2026-08-19
+资源目录 : E:\WorkSpace\ClickOCR\resources\models_v6\
+
+说明：
+- ONNX 哈希取自 RapidOCR 包内 default_models.yaml（onnxruntime 段），并经本地 sha256sum 校验一致。
+- 字符字典 small 与 medium 内容完全相同（diff 比对一致），已合并为一份 ppocrv6_dict.txt；
+  表格中仍按各自源链接列出，落盘为同一文件。
+
+统一下载前缀：
+https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/
+
+----------------------------------------------------------------------------------------------------
+序号  规模    文件名                      大小(字节)    大小       SHA256
+----------------------------------------------------------------------------------------------------
+1     tiny    PP-OCRv6_det_tiny.onnx     1829618       1.7 MB    f42c0fbd294d95eac1a550e131b277dac97462c8025fa4b6c3cec1b7894bd3d5
+2     tiny    PP-OCRv6_rec_tiny.onnx     4489813       4.3 MB    e16e242de5937ad92609223f19bc2aff3727ee40b095f996907c24749bad251b
+3     tiny    ppocrv6_tiny_dict.txt      27156         27 KB     c5cbe34ef40c29c4df07ed012bf96569cb69a2d2a01a07027e9f13cb832bd9cd
+4     small   PP-OCRv6_det_small.onnx    9929594       9.5 MB    090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f
+5     small   PP-OCRv6_rec_small.onnx    21234383      20.3 MB   6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884
+6     small   ppocrv6_dict.txt           74947         74 KB     b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d
+7     medium  PP-OCRv6_det_medium.onnx   62119454      59.2 MB   92078b7355007ccfffcd4c8cd441a3afd4538904d06881b29a155e1e679907c2
+8     medium  PP-OCRv6_rec_medium.onnx   76629984      73.1 MB   eef444829dbbe18d7fea59a3f6eb75647518d2b3a9568d27c92e42940204894b
+9     medium  ppocrv6_dict.txt           74947         74 KB     b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d
+
+（序号 6 与 9 为同一份文件 ppocrv6_dict.txt，分别来自 small / medium 两份等价的源链接）
+
+================================================================
+下载直链
+================================================================
+
+det:
+1  tiny   https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/det/PP-OCRv6_det_tiny.onnx
+4  small  https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx
+7  medium https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/det/PP-OCRv6_det_medium.onnx
+
+rec:
+2  tiny   https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_tiny.onnx
+5  small  https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx
+8  medium https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx
+
+dict:
+3  tiny   https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/paddle/PP-OCRv6/rec/PP-OCRv6_rec_tiny/ppocrv6_tiny_dict.txt
+6  small  https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/paddle/PP-OCRv6/rec/PP-OCRv6_rec_small/ppocrv6_dict.txt
+9  medium https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/paddle/PP-OCRv6/rec/PP-OCRv6_rec_medium/ppocrv6_dict.txt
