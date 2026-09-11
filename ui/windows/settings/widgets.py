@@ -76,7 +76,7 @@ class _ShortcutRowEdit(QWidget):
         for cb, name in zip(self._mods, names):
             cb.setChecked(enabled and name in low)
         if enabled:
-            self._cap._show_key(SettingsPanel._key_from_combo(combo, "a"))
+            self._cap.set_key(SettingsPanel._key_from_combo(combo, "a"))
         self._sync_enabled()
 
     def combo(self) -> str:
@@ -103,13 +103,12 @@ class KeyCaptureEdit(QLineEdit):
     def __init__(self, key: str = "", parent=None):
         super().__init__(parent)
         self._capturing = False
-        self._key = key
         self.setReadOnly(True)
         self.setFixedWidth(36)             # 单字母宽度（一个键位足够）
         self.setPlaceholderText(T("hk.capture_ph", "键"))
         self.setToolTip(T("ui.key_capture_tip", "点击输入框，然后按下要用的字母键（如 C）"))
         self.setCursor(Qt.PointingHandCursor)
-        self._show_key(key)
+        self.set_key(key)
 
     # ---- 显示 ----
     def sizeHint(self):
@@ -120,6 +119,16 @@ class KeyCaptureEdit(QLineEdit):
     def _show_key(self, key: str):
         from ui.base.hotkey_keys import token_display
         self.setText(token_display(key))
+
+    def set_key(self, key: str):
+        """同时写回内部状态与显示——唯一入口，避免「显示对、状态错」。
+
+        `_show_key` 只改显示文本，`combo()` 读的却是 `self._key`（内部状态）。
+        若只调 `_show_key`，会出现「界面上有字母、保存时丢字母」。故加载/捕获
+        一律走本方法，保证两处同步。
+        """
+        self._key = key
+        self._show_key(key)
 
     # ---- 交互 ----
     def mousePressEvent(self, e):
@@ -137,9 +146,8 @@ class KeyCaptureEdit(QLineEdit):
         tok = qt_to_token(e.key())
         if tok is None:
             return
-        self._key = tok
         self._capturing = False
-        self._show_key(self._key)
+        self.set_key(tok)
         self.keyCaptured.emit(self._key)
         e.accept()
 
