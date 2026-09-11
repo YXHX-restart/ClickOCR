@@ -2210,7 +2210,8 @@ class ResultOverlay(QGraphicsView):
         if not self._anno_mode:
             return
         self._anno_mode = False
-        self._fgroup.set_yield_enabled(False)   # 关闭让位并恢复未恢复的浮窗
+        if getattr(self, "_fgroup", None) is not None:
+            self._fgroup.set_yield_enabled(False)   # 关闭让位并恢复未恢复的浮窗
         if self._toolbar is not None:
             self._toolbar.set_anno_mode(False)   # 收起工具段（含关闭子浮层）
             self._toolbar.btn_anno.setChecked(False)  # 取消高亮
