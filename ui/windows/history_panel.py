@@ -54,6 +54,33 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp",
                ".avif", ".heic", ".heif", ".hif"}
 
 
+def _load_pixmap(path) -> QPixmap:
+    """路径 → QPixmap：Qt 原生格式直读；Qt 不支持的格式走统一解码器回退。
+
+    Qt 的 QImageReader 只认 bmp/gif/jpg/png/tiff/webp 等，**不支持 heic/heif/avif**
+    （实测 QPixmap 加载这两类均失败）。而历史图的保存格式可由用户设为这几种，
+    故回退到 `core_engine.image_decode`（cv2 + Pillow）解出 BGR 再转 QImage。
+    """
+    pm = QPixmap(str(path))
+    if not pm.isNull():
+        return pm
+    try:
+        import cv2
+        import numpy as _np
+
+        from core_engine.image_decode import decode_image_bytes
+        raw = _np.fromfile(str(path), dtype=_np.uint8)
+        bgr = decode_image_bytes(raw)
+        if bgr is None:
+            return QPixmap()
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        h, w = rgb.shape[:2]
+        qimg = QImage(rgb.data, w, h, int(rgb.strides[0]), QImage.Format_RGB888)
+        return QPixmap.fromImage(qimg.copy())    # copy：脱离临时 buffer
+    except Exception:              # noqa: BLE001 加载失败 → 空图（调用方按「无图」处理）
+        return QPixmap()
+
+
 class _ResizeHandle(QWidget):
     """八方向缩放手柄之一：无边框窗体在指定边/角拖动改变尺寸。
 
@@ -211,7 +238,7 @@ class _DragImageLabel(QLabel):
         pm = self.pixmap()
         preview = pm if (pm is not None and not pm.isNull()) else None
         # 图片数据：用首张（全分辨率）作为位图载荷（粘贴类目标单图）
-        src = QPixmap(paths[0])
+        src = _load_pixmap(paths[0])
         if src.isNull() and preview is not None:
             src = preview
         if not src.isNull():
@@ -555,7 +582,7 @@ class HistoryPanel(CardWindow):
         thumb.setToolTip(T("hist.drag_out_tip",
                            "拖拽图片到桌面 / 微信 / QQ / WorkBuddy 等发送"))
         p = self._thumb_dir / Path(r["screenshot_path"]).name
-        pm = QPixmap(str(p)) if p.exists() else QPixmap()
+        pm = _load_pixmap(p) if p.exists() else QPixmap()
         if not pm.isNull():
             pm = pm.scaled(thumb.size(), Qt.KeepAspectRatio,
                            Qt.SmoothTransformation)
@@ -751,7 +778,7 @@ class HistoryPanel(CardWindow):
         if not p or not p.exists():
             self._toast(T("hist.copy_no_img", "原图文件不存在"))
             return False
-        pm = QPixmap(str(p))
+        pm = _load_pixmap(p)
         if pm.isNull():
             self._toast(T("hist.copy_no_img", "原图文件不存在"))
             return False
@@ -801,7 +828,7 @@ class HistoryPanel(CardWindow):
             p = self._orig_path(rec)
             if not p or not p.exists():
                 return None
-            base = QPixmap(str(p))
+            base = _load_pixmap(p)
             if base.isNull():
                 return None
             return render_annotated_image(base.toImage(),
@@ -817,7 +844,7 @@ class HistoryPanel(CardWindow):
                 if rec is not None:
                     pp = self._orig_path(rec)
                     if pp and pp.exists():
-                        b = QPixmap(str(pp))
+                        b = _load_pixmap(pp)
                         if not b.isNull():
                             return b
             except Exception:

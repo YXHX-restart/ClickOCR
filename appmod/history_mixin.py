@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 from core_engine.ai_pipeline import MODEL_SET_TO_TIER, OcrBox
 from core_engine.db_manager import DBManager, HistoryStorage
 from core_engine.logging_setup import setup_logging, get_logger
+from core_engine.image_decode import decode_image_bytes as _decode_image_bytes
 
 from ocr import RapidOcrEngine
 from screenshot import ScreenshotService
@@ -32,6 +33,7 @@ from ui.base.theme import apply_theme, resolve_theme, install_system_follow
 from ui.windows.selection import SelectionOverlay
 from ui.windows.result_overlay import ResultOverlay
 from appmod.workers import OcrWorker, TableWorker, EngineLoader
+from appmod.image_encode import PILLOW_FORMATS, pillow_encode
 
 log = get_logger("app")
 
@@ -64,8 +66,11 @@ class HistoryMixin:
             full = self.config.get_screenshots_dir() / Path(rel).name
             if not full.exists():
                 raise OSError(f"截图文件缺失: {rel}")
-            img = cv2.imdecode(np.fromfile(str(full), dtype=np.uint8),
-                               cv2.IMREAD_COLOR)
+            # 统一解码（cv2 + Pillow 回退）：save_format 可能是 heic/heif/avif，
+            # cv2.imdecode 读不了这三种（原实现直接 imdecode，存 HEIC 后打不开历史）。
+            # np.fromfile 保留「兼容非 ASCII 路径」的特性。
+            raw = np.fromfile(str(full), dtype=np.uint8)
+            img = _decode_image_bytes(raw)
             if img is None:
                 raise OSError(f"截图文件缺失: {rel}")
             h, w = img.shape[:2]
@@ -133,17 +138,27 @@ class HistoryMixin:
     def _encode_image(self, img):
         """按 [software] save_format/save_quality 编码图片。
 
-        返回 (ok, ext, buf)；有损格式（jpg/webp）带质量参数，
-        png/bmp 无损忽略质量。
+        返回 (ok, ext, buf)；有损格式（jpg/webp/heic/heif/avif）带质量参数，
+        png/bmp 无损忽略质量。cv2 覆盖原生格式（png/jpg/bmp/webp）；
+        heic/heif/avif cv2 编不了，走 Pillow（见 appmod/image_encode），
+        依赖缺失时 ok=False，调用方跳过该条。
         """
         fmt = str(self.config.get("software", "save_format", "png")).lower()
-        if fmt not in ("png", "jpg", "jpeg", "bmp", "webp"):
+        if fmt not in ("png", "jpg", "jpeg", "bmp", "webp",
+                       "heic", "heif", "avif"):
             fmt = "png"
         ext = "jpg" if fmt == "jpeg" else fmt
+        q = max(1, min(100, self.config.getint(
+            "software", "save_quality", 90)))
+        if fmt in PILLOW_FORMATS:
+            data = pillow_encode(img, fmt, q)
+            if data is None:
+                log.warning("图片编码失败（%s）：缺少 Pillow/pillow_heif 或格式不支持", fmt)
+                return False, ext, None
+            # 包成 ndarray 以保持与 cv2.imencode 一致的返回契约（调用方用 .tobytes()）
+            return True, ext, np.frombuffer(data, dtype=np.uint8)
         params = []
         if fmt in ("jpg", "jpeg", "webp"):
-            q = max(1, min(100, self.config.getint(
-                "software", "save_quality", 90)))
             key = (cv2.IMWRITE_JPEG_QUALITY if fmt in ("jpg", "jpeg")
                    else cv2.IMWRITE_WEBP_QUALITY)
             params = [key, q]

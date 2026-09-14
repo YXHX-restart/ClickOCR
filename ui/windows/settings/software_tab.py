@@ -98,15 +98,17 @@ class SoftwareTabMixin:
             form, self.combo_selection,
             T("ui.copy_mode_hint", "提示：复制模式本期仅保存配置，行为暂不变（M2 计划 §5.2）。"))
 
-        # ---- 图片保存格式（PNG/JPG/BMP/WebP）+ 质量（有损格式 1-100）----
+        # ---- 图片保存格式（PNG/JPG/BMP/WebP/HEIC/AVIF）+ 质量（有损格式 1-100）----
         self.combo_save_fmt = FitComboBox()
         for label, data in ((T("ui.save_fmt_png", "PNG（无损）"), "png"),
                             (T("ui.save_fmt_jpg", "JPG（有损·小体积）"), "jpg"),
                             (T("ui.save_fmt_bmp", "BMP（无损）"), "bmp"),
-                            (T("ui.save_fmt_webp", "WebP（有损·小体积）"), "webp")):
+                            (T("ui.save_fmt_webp", "WebP（有损·小体积）"), "webp"),
+                            (T("ui.save_fmt_heic", "HEIC/HEIF（有损·体积最小）"), "heic"),
+                            (T("ui.save_fmt_avif", "AVIF（有损·体积小）"), "avif")):
             self.combo_save_fmt.addItem(label, data)
         cur_fmt = self._cfg.get("software", "save_format", "png").lower()
-        if cur_fmt not in ("png", "jpg", "bmp", "webp"):
+        if cur_fmt not in ("png", "jpg", "bmp", "webp", "heic", "heif", "avif"):
             cur_fmt = "png"
         self.combo_save_fmt.setCurrentIndex(
             self.combo_save_fmt.findData(cur_fmt))
@@ -114,7 +116,8 @@ class SoftwareTabMixin:
         self._attach_hint(
             form, self.combo_save_fmt,
             T("ui.save_fmt_hint",
-              "历史记录图片的保存格式；JPG/WebP 体积更小，PNG/BMP 无损。"))
+              "历史记录图片的保存格式；PNG/BMP 无损，JPG/WebP/HEIC/AVIF 有损体积更小"
+              "（HEIC/AVIF 走 Pillow+pillow_heif，缺依赖时该条跳过不落库）。"))
 
         self.slider_quality = QSlider(Qt.Horizontal)
         self.slider_quality.setRange(1, 100)
@@ -132,7 +135,7 @@ class SoftwareTabMixin:
         self._attach_hint(
             form, quality_row,
             T("ui.save_quality_hint",
-              "JPG/WebP 有损压缩质量（1-100，越高越清晰体积越大）；"
+              "JPG/WebP/HEIC/AVIF 有损压缩质量（1-100，越高越清晰体积越大）；"
               "PNG/BMP 无损，质量不生效。"))
         # 质量仅对 JPG/WebP 生效
         self.combo_save_fmt.currentIndexChanged.connect(
@@ -461,9 +464,9 @@ class SoftwareTabMixin:
         self._notify(T("ui.msg_cleared", "已清空全部历史（收藏保留）"))
 
     def _on_save_fmt_changed(self):
-        """质量滑块仅对有损格式（JPG/WebP）生效。"""
+        """质量滑块仅对有损格式（JPG/WebP/HEIC/AVIF）生效。"""
         fmt = self.combo_save_fmt.currentData()
-        lossy = fmt in ("jpg", "webp")
+        lossy = fmt in ("jpg", "jpeg", "webp", "heic", "heif", "avif")
         self.slider_quality.setEnabled(lossy)
         self.lbl_quality.setEnabled(lossy)
 
