@@ -32,35 +32,11 @@ from PySide6.QtWidgets import QApplication, QGraphicsView, QGraphicsScene, \
 from config import ConfigManager
 from platform_compat import IS_WINDOWS
 from platform_compat.fonts import ui_font_family
+from ui.base.hotkey_keys import parse_qt_combo
 from ui.core.table_detect import (          # 表格检测纯算法（无 Qt 依赖）
     _bbox, _bbox_center, build_blobs,
     _detect_table_lines, _coords_table_grid, map_cell_texts,
 )
-
-
-def _parse_qt_combo(combo: str):
-    """'shift+c' -> (modifier_mask, Qt.Key_letter)；'off'/空 -> None（关闭）。
-
-    token 由 ui.base.hotkey_keys 统一映射，支持 字母/数字/F1-F12/方向键/空格/标点。
-    """
-    from ui.base.hotkey_keys import token_to_qt
-    if not combo or str(combo).strip().lower() in ("off", "none", "false"):
-        return None
-    mods = Qt.NoModifier
-    key = None
-    for p in str(combo).replace("+", " ").split():
-        p = p.strip().lower()
-        if p == "ctrl":
-            mods |= Qt.ControlModifier
-        elif p == "alt":
-            mods |= Qt.AltModifier
-        elif p == "shift":
-            mods |= Qt.ShiftModifier
-        elif p == "win":
-            mods |= Qt.MetaModifier
-        else:
-            key = token_to_qt(p) or key
-    return (mods, key) if key is not None else None
 
 
 class _BorderOverlay(QWidget):
@@ -182,7 +158,7 @@ class ResultOverlay(QGraphicsView):
         self._auto_ocr = cfg.getbool("software", "ocr_auto", True)
         # M2：复制快捷键（[hotkey_overlay] copy_shortcut，默认 shift+c，可改键/可关闭；
         #      Ctrl+A 固定为全选，Ctrl+C 固定为复制）
-        self._copy_shortcut = _parse_qt_combo(
+        self._copy_shortcut = parse_qt_combo(
             cfg.get("hotkey_overlay", "copy_shortcut", "shift+c"))
         # 图片缩放修饰键（[hotkey_overlay] zoom_modifier：ctrl/alt/shift/off）
         # 按住修饰键+滚轮 = 窗口内图片缩放；直接滚轮 = 平移查看
@@ -212,7 +188,7 @@ class ResultOverlay(QGraphicsView):
             c = cfg.get(_HK_SEC.get(key, "hotkey_overlay"), key, default)
             if not c or c.lower() in ("off", "none", "false"):
                 return None
-            return _parse_qt_combo(c)
+            return parse_qt_combo(c)
         self._select_all_hk = _hk("select_all", "ctrl+a")       # 全选文字
         self._copy_sel_hk = _hk("copy_selected", "ctrl+c")      # 复制选中文字
         self._reocr_hk = _hk("reocr", "ctrl+r")                 # 重新 OCR

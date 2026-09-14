@@ -30,7 +30,7 @@ from ui.base.theme import apply_theme, resolve_theme
 from ui.base.theme_dialog import ThemeDialog
 from ui.base.widgets import (ThemeSpinBox, ColorButton as _ColorButton,
                              FitComboBox)
-from ui.windows.result_overlay import _parse_qt_combo
+from ui.base.hotkey_keys import parse_qt_combo
 from ui.windows.settings.widgets import _ModBox, _ShortcutRowEdit, KeyCaptureEdit
 
 
@@ -63,7 +63,7 @@ class HotkeyTabMixin:
                  parser=None, invalid: str | None = None, apply=None):
             """声明一个快捷键行并登记到 _hk_rows（_save 统一读取 combo()）。
 
-            parser：本地快捷键用 _parse_qt_combo 校验；再次验证格式。
+            parser：本地快捷键用 parse_qt_combo 校验；再次验证格式。
             apply：全局热键行用（冲突检测 + 注册/注销到 HotkeyHost），返回 msgs 列表。
             返回已构造的 _ShortcutRowEdit（可再拿其子控件做旧属性兼容）。
             """
@@ -78,7 +78,7 @@ class HotkeyTabMixin:
                        default: str):
             """局部快捷键行（截图选择/贴图窗口/标注）：Qt 解析校验后写 config。"""
             return _row(label_key, label, sec, key, default,
-                        parser=_parse_qt_combo,
+                        parser=parse_qt_combo,
                         invalid=f"{label} 快捷键格式无效")
 
         add_hk_group("hk.group_global", "全局热键")
@@ -281,34 +281,6 @@ class HotkeyTabMixin:
             if p not in ("ctrl", "alt", "shift", "win"):
                 tok = p
         return tok
-
-    # ---- 通用：修饰键 + 键位拾取框 + 启用勾选（四行快捷键统一样式）----
-    @staticmethod
-    def _load_key_row(cbs, key_widget, chk_enable, combo: str):
-        """从组合字符串加载修饰键 checkbox / 键位拾取框 / 启用勾选。"""
-        enabled = bool(combo) and combo.lower() not in ("off", "none", "false")
-        chk_enable.setChecked(enabled)
-        low = combo.lower().replace("+", " ")
-        for cb, name in ((cbs[0], "ctrl"), (cbs[1], "alt"),
-                         (cbs[2], "shift"), (cbs[3], "win")):
-            cb.setChecked(enabled and name in low)
-        if enabled:
-            key_widget._show_key(SettingsPanel._key_from_combo(combo, "a"))
-        else:
-            key_widget._show_key(key_widget.key())
-
-    @staticmethod
-    def _current_key_row(cbs, key_widget, chk_enable) -> str:
-        """从控件生成组合字符串；未启用返回 "off"。（兼容旧调用，新代码用 _ShortcutRowEdit.combo()）"""
-        if not chk_enable.isChecked():
-            return "off"
-        parts = []
-        for cb, name in ((cbs[0], "ctrl"), (cbs[1], "alt"),
-                         (cbs[2], "shift"), (cbs[3], "win")):
-            if cb.isChecked():
-                parts.append(name)
-        parts.append(key_widget.key())
-        return "+".join(parts)
 
     def _secondary_apply(self, hid: int, sec: str, key: str, label: str,
                          off_val: str = "off", hint: str = "ctrl+shift+a"):

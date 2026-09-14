@@ -35,7 +35,6 @@ from ui.base.theme import apply_theme, resolve_theme
 from ui.base.theme_dialog import ThemeDialog
 from ui.base.widgets import (ThemeSpinBox, ColorButton as _ColorButton,
                              FitComboBox)
-from ui.windows.result_overlay import _parse_qt_combo
 from ui.windows.settings.widgets import _ModBox, _ShortcutRowEdit, KeyCaptureEdit
 from ui.windows.settings.software_tab import SoftwareTabMixin
 from ui.windows.settings.ui_tab import UiTabMixin

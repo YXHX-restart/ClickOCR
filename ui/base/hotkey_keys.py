@@ -91,3 +91,30 @@ def token_display(tok: str) -> str:
     if t.startswith("f") and t[1:].isdigit():
         return t.upper()
     return t
+
+
+def parse_qt_combo(combo: str):
+    """'shift+c' -> (Qt.ShiftModifier, Qt.Key_C)；'off'/空 -> None（关闭）。
+
+    本地（贴图/选区）快捷键匹配用：把组合字符串解析成 Qt 修饰键掩码 + Qt 键值。
+    token 由本模块统一映射，支持 字母/数字/F1-F12/方向键/空格/标点。
+    原先住在 result_overlay.py（ui.windows.settings 三处反向 import 它），2026-09-14
+    搬到本模块——这里本就是「三处统一映射」的家。
+    """
+    if not combo or str(combo).strip().lower() in ("off", "none", "false"):
+        return None
+    mods = Qt.NoModifier
+    key = None
+    for p in str(combo).replace("+", " ").split():
+        p = p.strip().lower()
+        if p == "ctrl":
+            mods |= Qt.ControlModifier
+        elif p == "alt":
+            mods |= Qt.AltModifier
+        elif p == "shift":
+            mods |= Qt.ShiftModifier
+        elif p == "win":
+            mods |= Qt.MetaModifier
+        else:
+            key = token_to_qt(p) or key
+    return (mods, key) if key is not None else None
