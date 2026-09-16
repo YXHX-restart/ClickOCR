@@ -1,0 +1,31 @@
+name: tests
+
+# 离线单测：不需要真实桌面（Qt 走 offscreen）、不需要推理大模型
+# （test_engine 在模型缺失时自行 skip；v6-tiny 已入库，CI 会真跑一遍端到端识别）。
+#
+# 覆盖范围：tests/ 下的 unittest + `tests/test_guards.py` 把 scripts/ 里
+# 14 个断言型守卫当子进程跑一遍 —— 一条命令 = 全套回归。
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unittest:
+    runs-on: windows-latest          # 项目依赖 mss / winreg / pynput，是 Windows 目标
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: 离线单测（含脚本守卫）
+        run: python -m unittest discover -s tests -t . -v

@@ -17,6 +17,8 @@ from PySide6.QtCore import Qt, QRect
 from PySide6.QtWidgets import (QWidget, QFrame, QVBoxLayout, QHBoxLayout,
                                QLabel, QPushButton, QApplication)
 
+from ui.base.texts import T
+
 
 class DragBar(QWidget):
     """可拖动标题栏（无边框窗口的移动把手，三面板共用）。
@@ -42,7 +44,7 @@ class DragBar(QWidget):
             self._close = QPushButton()
             self._close.setIcon(svg_icon("close", color=icon_color(), size=12))
             self._close.setProperty("kind", "close")
-            self._close.setToolTip("关闭 (Esc)")
+            self._close.setToolTip(T("ui.close_tip", "关闭 (Esc)"))
             # 点击时才取 window()：构造期间本控件尚未挂入窗口层级，
             # 此时 self.window() 返回的是自己而非宿主窗口。
             self._close.clicked.connect(lambda: self.window().close())

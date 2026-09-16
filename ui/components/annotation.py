@@ -29,12 +29,16 @@ from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QPushButton,
 
 from platform_compat.fonts import ui_font_family
 
+from core_engine.logging_setup import get_logger
+
 # 标注核心纯逻辑（命令撤销体系 + 序列化 + 样式合法值唯一来源，无 Qt 依赖）
 from ui.core.anno_core import (ANNO_VERSION, UNDO_LIMIT, SERIALIZABLE_TYPES,
                           MOSAIC_MODES, num_style_ids, tool_style_ids,
                           _Cmd, _AddCmd, _DeleteCmd, _MoveCmd, _EditCmd,
                           _ClearCmd, _RenumberCmd,
                           anno_to_json, anno_from_json)
+
+log = get_logger("annotation")
 
 
 # ---- 命令模式撤销/重做（Command 栈）：命令类见 ui/anno_core.py ----
@@ -321,10 +325,20 @@ class AnnotationSession:
         self._draw_item = None
 
     def _place_num(self, pt: QPointF):
-        """序号工具：在点击处放置一个序号标注（编号 = 起始序号 + 已有序号数）。"""
-        cnt = sum(1 for d in self.data if d.get("type") == "num")
+        """序号工具：在点击处放置一个序号标注。
+
+        编号 = **max(现有最大序号 + 1, 起始序号)**。
+        原先用「起始序号 + 已有序号数」：删掉中间某个序号后二者不再等价 ——
+        1/2/3 删掉 2，再放置得到 1+2=3，与已存在的 3 **重复**；用户又常先删后加
+        （改错位置就删了重放），所以必然撞上。取「最大序号 + 1」保证永不复用；
+        再与起始序号取大，保留它「最低起始序号」的原语义（用户抬高起始序号后，
+        即使不做重排，新放的也不会低于它）。
+        """
+        nums = [int(d.get("num", 0))
+                for d in self.data if d.get("type") == "num"]
+        num = max(max(nums) + 1, self.num_start) if nums else self.num_start
         d = {"type": "num", "x": pt.x(), "y": pt.y(),
-             "num": self.num_start + cnt,
+             "num": num,
              "style": self.num_style,
              "color": _hex(QColor(*self.color)),
              "font_size": self.num_size,
@@ -681,10 +695,18 @@ class AnnotationSession:
             self.scene.addItem(box)
             self._text_edit_box = box
             try:
-                item.document().contentsChanged.connect(
-                    lambda: self._sync_text_box(box, item))
-            except Exception:            # noqa: BLE001
-                pass
+                # 槽必须是**绑定方法**，不能是 `lambda: self._sync_text_box(box, item)`：
+                # 闭包会把 box/item 强引用住，而闭包被 document（C++ 侧）持有、
+                # document 又归 item 所有 —— `item ⇄ document → lambda → item`
+                # 是**跨 C++/Python 的引用环**：Python 的 gc 看不到 C++ 那一半，
+                # refcount 也永远不归零（实测 `Connection.disconnect()` 同样无效 ——
+                # PySide 把可调用对象留在发送者的内部登记表里直到发送者析构，而发送者
+                # 正被这个环吊着）→ 每编辑一次就地文字就泄漏一组 item/document/边框。
+                # 绑定方法只强引用 self（会话，本就长活），item/box 收尾时随引用
+                # 消失自然析构，因此也无需保存/断开连接对象。
+                item.document().contentsChanged.connect(self._on_edit_text_changed)
+            except Exception as e:       # noqa: BLE001 连不上不该阻断进入编辑态
+                log.warning("文本框边框跟随连接失败（编辑时边框不会随内容增长）：%s", e)
         item.setFocus()                  # 光标进入，可直接输入
 
     def _sync_text_box(self, box, item):
@@ -700,6 +722,15 @@ class AnnotationSession:
         # 编辑器失焦（点击其它位置/切换到别处）→ 提交
         if self._text_edit is not None and new is not self._text_edit:
             self._commit_text()
+
+    def _on_edit_text_changed(self):
+        """就地编辑内容变化 → 虚线边框跟随（contentsChanged 的槽，见 _start_text_edit）。
+
+        用绑定方法而非闭包：不捕获 item/box，避免跨 C++/Python 的引用环。
+        目标对象从 `_text_edit*` 字段现取，收尾后为 None 即自动失效。
+        """
+        if self._text_edit is not None and self._text_edit_box is not None:
+            self._sync_text_box(self._text_edit_box, self._text_edit)
 
     def _commit_text(self):
         it = self._text_edit

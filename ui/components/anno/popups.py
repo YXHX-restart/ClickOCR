@@ -23,6 +23,9 @@ from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QPushButton,
 
 from platform_compat.fonts import ui_font_family
 
+from ui.base.texts import T
+from ui.base.widgets import signals_blocked
+
 # 标注核心纯逻辑（命令撤销体系 + 序列化 + 样式合法值唯一来源，无 Qt 依赖）
 from ui.core.anno_core import (ANNO_VERSION, UNDO_LIMIT, SERIALIZABLE_TYPES,
                           TOOL_STYLES, NUM_STYLES, MOSAIC_MODES,
@@ -58,7 +61,7 @@ class _ColorSizeRow(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
         if show_color:
-            lay.addWidget(QLabel("颜色"))
+            lay.addWidget(QLabel(T("anno.color", "颜色")))
             from ui.base.widgets import ColorButton
             self.color_btn = ColorButton(color)
             self.color_btn.colorChanged.connect(self.color_changed.emit)
@@ -67,7 +70,7 @@ class _ColorSizeRow(QWidget):
             self.color_btn = None
         if show_size:
             lay.addSpacing(4)
-            lay.addWidget(QLabel("大小"))
+            lay.addWidget(QLabel(T("anno.size", "大小")))
             self.slider = QSlider(Qt.Horizontal)
             self.slider.setRange(*self._size_range)
             self.slider.setValue(max(self._size_range[0],
@@ -85,15 +88,19 @@ class _ColorSizeRow(QWidget):
             self.lbl = None
 
     def set_state(self, color: tuple, width: int):
-        """打开时回显当前颜色/大小（信号抑制：回显不改状态）。"""
-        if self.color_btn is not None:
-            self.color_btn.set_color(tuple(color))
-        if self.slider is not None:
-            self.slider.blockSignals(True)
-            self.slider.setValue(max(self._size_range[0],
-                                     min(self._size_range[1], int(width))))
-            self.slider.blockSignals(False)
-            self.lbl.setText(str(self.slider.value()))
+        """打开时回显当前颜色/大小（信号抑制：回显不改状态）。
+
+        `ColorButton.set_color()` **每次都 emit colorChanged**，不挡就会在每次打开
+        浮层时向宿主回发一次同值颜色 → 宿主按「用户改色」重渲染一遍（闪动）。
+        原先只挡了 slider，color_btn 漏了。
+        """
+        with signals_blocked(self.color_btn, self.slider):
+            if self.color_btn is not None:
+                self.color_btn.set_color(tuple(color))
+            if self.slider is not None:
+                self.slider.setValue(max(self._size_range[0],
+                                         min(self._size_range[1], int(width))))
+                self.lbl.setText(str(self.slider.value()))
 
 
 class _AnnoPopupBase(QWidget):
@@ -146,7 +153,7 @@ class _FontPopup(_AnnoPopupBase):
         # 第 1 行：字体 | 色块(无标签) | 加粗 | 斜体
         lay1 = QHBoxLayout()
         lay1.setSpacing(6)
-        lay1.addWidget(QLabel("字体"))
+        lay1.addWidget(QLabel(T("anno.font", "字体")))
         self.font_combo = QFontComboBox()
         self.font_combo.setMaximumWidth(150)
         self.font_combo.setCurrentFont(QFont(ui_font_family()))
@@ -158,7 +165,7 @@ class _FontPopup(_AnnoPopupBase):
         self.btn_bold = QPushButton("B")
         self.btn_bold.setCheckable(True)
         self.btn_bold.setFocusPolicy(Qt.NoFocus)
-        self.btn_bold.setToolTip("加粗")
+        self.btn_bold.setToolTip(T("anno.bold", "加粗"))
         f = self.btn_bold.font(); f.setBold(True); self.btn_bold.setFont(f)
         self.btn_bold.setFixedWidth(30)
         self.btn_bold.toggled.connect(self.bold_toggled.emit)
@@ -166,7 +173,7 @@ class _FontPopup(_AnnoPopupBase):
         self.btn_italic = QPushButton("I")
         self.btn_italic.setCheckable(True)
         self.btn_italic.setFocusPolicy(Qt.NoFocus)
-        self.btn_italic.setToolTip("斜体")
+        self.btn_italic.setToolTip(T("anno.italic", "斜体"))
         fi = self.btn_italic.font(); fi.setItalic(True); self.btn_italic.setFont(fi)
         self.btn_italic.setFixedWidth(30)
         self.btn_italic.toggled.connect(self.italic_toggled.emit)
@@ -174,7 +181,7 @@ class _FontPopup(_AnnoPopupBase):
         # 第 2 行：大小滑块（8-64，与其他工具滑块样式一致）
         lay2 = QHBoxLayout()
         lay2.setSpacing(6)
-        lay2.addWidget(QLabel("大小"))
+        lay2.addWidget(QLabel(T("anno.size", "大小")))
         self.size_slider = QSlider(Qt.Horizontal)
         self.size_slider.setRange(8, 64)
         self.size_slider.setValue(18)
@@ -199,14 +206,20 @@ class _FontPopup(_AnnoPopupBase):
 
     def set_state(self, size: int, bold: bool, italic: bool,
                   color: tuple = (255, 95, 95), _width: int = 2):
-        """打开时回显当前文字属性 + 颜色（信号抑制：回显不改状态）。"""
-        self.size_slider.blockSignals(True)
-        self.size_slider.setValue(max(8, min(64, int(size))))
-        self.size_slider.blockSignals(False)
-        self.size_lbl.setText(str(self.size_slider.value()))
-        self.btn_bold.setChecked(bool(bold))
-        self.btn_italic.setChecked(bool(italic))
-        self.color_btn.set_color(tuple(color))
+        """打开时回显当前文字属性 + 颜色（信号抑制：回显不改状态）。
+
+        size_slider / btn_bold / btn_italic / color_btn 四个控件都会在赋值时发信号
+        （`setChecked` 发 `toggled`、`set_color` 发 `colorChanged`），原先只挡了
+        slider —— 每次打开文字浮层都会向宿主回发一轮同值 bold/italic/color，
+        宿主按「用户改了属性」重渲染，表现为浮层一弹出界面就闪一下。
+        """
+        with signals_blocked(self.size_slider, self.btn_bold, self.btn_italic,
+                             self.color_btn):
+            self.size_slider.setValue(max(8, min(64, int(size))))
+            self.size_lbl.setText(str(self.size_slider.value()))
+            self.btn_bold.setChecked(bool(bold))
+            self.btn_italic.setChecked(bool(italic))
+            self.color_btn.set_color(tuple(color))
 
 
 class _MosaicModePopup(_AnnoPopupBase):
@@ -402,12 +415,13 @@ class _NumPopup(_AnnoPopupBase):
         # 第 1 行：序号（左上）+ 样式图标（同行）
         lay0 = QHBoxLayout()
         lay0.setSpacing(6)
-        lay0.addWidget(QLabel("序号"))
+        lay0.addWidget(QLabel(T("anno.number", "序号")))
         self.start_spin = QSpinBox()
         self.start_spin.setRange(0, 9999)
         self.start_spin.setValue(1)
         self.start_spin.setFixedWidth(52)      # 两位数宽
-        self.start_spin.setToolTip("序号标注的最低起始序号（其余按 +1 递增）")
+        self.start_spin.setToolTip(
+            T("anno.number_tip", "序号标注的最低起始序号（其余按 +1 递增）"))
         self.start_spin.valueChanged.connect(self.start_changed.emit)
         lay0.addWidget(self.start_spin)
         lay0.addStretch(1)
@@ -421,8 +435,9 @@ class _NumPopup(_AnnoPopupBase):
                                 size_range=(8, 64))
         if self.cs.slider is not None:
             self.cs.slider.setToolTip(
-                "数字字号（像素）；圆圈直径约为字号的 2 倍，"
-                "多位数自动拉宽为胶囊形")
+                T("anno.number_size_tip",
+                  "数字字号（像素）；圆圈直径约为字号的 2 倍，"
+                  "多位数自动拉宽为胶囊形"))
         self.cs.color_changed.connect(self.color_changed.emit)
         self.cs.width_changed.connect(self.size_changed.emit)
         root.addWidget(self.cs)

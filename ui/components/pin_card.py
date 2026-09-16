@@ -11,6 +11,8 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QFrame)
 
+from ui.base.texts import T
+
 
 class PinCard(QWidget):
     """钉图信息卡片：缩略图 + 信息（无边框半透明卡片，置顶）。"""
@@ -67,7 +69,7 @@ class PinCard(QWidget):
             self.thumb.setPixmap(pm.scaled(
                 self.thumb.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
         except Exception:
-            self.thumb.setText("无图")
+            self.thumb.setText(T("hist.no_img", "无图"))
 
     def set_info(self, text: str, info: str):
         """设置 OCR 文字预览和尺寸/记录信息。"""

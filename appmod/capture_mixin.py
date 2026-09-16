@@ -29,6 +29,7 @@ from hotkey import HotkeyHost
 from platform_compat import capabilities, scroll_capture_supported
 from platform_compat.fonts import ui_font_family
 from ui.base.theme import apply_theme, resolve_theme, install_system_follow
+from ui.base.texts import T
 from ui.windows.selection import SelectionOverlay
 from ui.windows.result_overlay import ResultOverlay
 from appmod.workers import OcrWorker, TableWorker, EngineLoader
@@ -126,8 +127,10 @@ class CaptureMixin:
             img = self.svc.grab_full()
         except Exception as e:  # noqa: BLE001
             self._restore_hidden()
-            self.tray.showMessage("ClickOCR", f"全屏截图失败：{e}",
-                                  QSystemTrayIcon.Warning, 3000)
+            self.tray.showMessage(
+                "ClickOCR",
+                T("app.fullscreen_fail", "全屏截图失败：") + str(e),
+                QSystemTrayIcon.Warning, 3000)
             return
         self._restore_hidden()
         ov = self._make_overlay(img, self._full_img_raw_bbox(img))
@@ -186,8 +189,10 @@ class CaptureMixin:
                                                ManualCapture, StopListener)
         if not scroll_capture_supported():
             self._restore_hidden()
-            self.tray.showMessage("ClickOCR", "滚动截图仅支持 Windows",
-                                  QSystemTrayIcon.Warning, 3000)
+            self.tray.showMessage(
+                "ClickOCR",
+                T("app.scroll_unsupported", "滚动截图仅支持 Windows"),
+                QSystemTrayIcon.Warning, 3000)
             return
         # ---- 重入保护 ----
         # 滚动截图是「多个窗口 + 多条 pynput 监听线程 + 一个 stop Event」的有状态
@@ -262,8 +267,9 @@ class CaptureMixin:
             except RuntimeError:
                 pass
             self._teardown_scroll_capture()   # 收尾（停止选择监听线程并清引用）
-            self.tray.showMessage("ClickOCR", "已退出滚动截图",
-                                  QSystemTrayIcon.Information, 2000)
+            self.tray.showMessage(
+                "ClickOCR", T("app.scroll_exited", "已退出滚动截图"),
+                QSystemTrayIcon.Information, 2000)
 
         picker.chosen.connect(start_worker)
         picker.cancelled.connect(on_cancelled)
@@ -279,19 +285,23 @@ class CaptureMixin:
             pass
         # Esc 退出：不贴图
         if flags.get("cancel"):
-            self.tray.showMessage("ClickOCR", "已退出滚动截图",
-                                  QSystemTrayIcon.Information, 2000)
+            self.tray.showMessage(
+                "ClickOCR", T("app.scroll_exited", "已退出滚动截图"),
+                QSystemTrayIcon.Information, 2000)
             return
         if img is None or img.size == 0:
-            self.tray.showMessage("ClickOCR", "滚动截图未获得画面",
-                                  QSystemTrayIcon.Warning, 3000)
+            self.tray.showMessage(
+                "ClickOCR", T("app.scroll_no_frame", "滚动截图未获得画面"),
+                QSystemTrayIcon.Warning, 3000)
             return
         h, w = img.shape[:2]
         ov = self._make_overlay(img, raw)
         # 长图比框选区域高：整图等比缩放入屏（否则只能看到顶部一屏）
         ov.fit_to_screen()
-        self.tray.showMessage("ClickOCR", f"滚动截图完成：{w}×{h}",
-                              QSystemTrayIcon.Information, 2500)
+        self.tray.showMessage(
+            "ClickOCR",
+            T("app.scroll_done", "滚动截图完成：{w}×{h}").format(w=w, h=h),
+            QSystemTrayIcon.Information, 2500)
         if not self.ocr_auto:
             ov._set_status("滚动截图完成 · 点「文字框」或「表格」开始识别")
             return
@@ -305,7 +315,8 @@ class CaptureMixin:
             pass
         if flags.get("cancel"):
             return                       # Esc 退出：静默，不弹失败提示
-        self.tray.showMessage("ClickOCR", f"滚动截图失败：{msg}",
-                              QSystemTrayIcon.Warning, 3000)
+        self.tray.showMessage(
+            "ClickOCR", T("app.scroll_fail", "滚动截图失败：") + str(msg),
+            QSystemTrayIcon.Warning, 3000)
 
 

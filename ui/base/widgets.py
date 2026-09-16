@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from PySide6.QtCore import Qt, Signal, QSize, QRect
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QGridLayout,
@@ -15,6 +17,26 @@ from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QGridLayout,
                                QLineEdit, QComboBox, QApplication)
 
 from ui.base.card_window import CardWindow
+from ui.base.texts import T
+
+
+@contextmanager
+def signals_blocked(*objs):
+    """临时屏蔽这些 QObject 的信号（回显专用）。
+
+    浮层打开时要把控件设成「当前状态」：`ColorButton.set_color()` 每次都 emit
+    `colorChanged`、`QPushButton.setChecked()` 会 emit `toggled`……宿主收到后
+    会当成**用户改了设置**，触发一轮冗余重渲染（界面闪动），还会把同值再写回一次。
+
+    逐个 `blockSignals(True/False)` 容易漏（漏一处就白修）也会踩嵌套：这里记录
+    每个对象**原先**的状态并原样恢复，嵌套调用互不影响。
+    """
+    prev = [(o, o.blockSignals(True)) for o in objs if o is not None]
+    try:
+        yield
+    finally:
+        for o, was in prev:
+            o.blockSignals(was)
 
 
 def screen_for_point(point) -> object:
@@ -157,7 +179,7 @@ class ColorPickerDialog(CardWindow):
         self._preview = QPushButton()
         self._preview.setFixedSize(52, 28)
         self._preview.setCursor(Qt.PointingHandCursor)
-        self._preview.setToolTip("点击色板或输入色值")
+        self._preview.setToolTip(T("ui.color_pick_tip", "点击色板或输入色值"))
         self._hex = QLineEdit()
         self._hex.setMaximumWidth(120)
         self._hex.setPlaceholderText("#RRGGBB")
@@ -184,8 +206,8 @@ class ColorPickerDialog(CardWindow):
 
         # ---- 确定 / 取消 ----
         row = QHBoxLayout()
-        b_ok = QPushButton("确定")
-        b_cancel = QPushButton("取消")
+        b_ok = QPushButton(T("btn.ok", "确定"))
+        b_cancel = QPushButton(T("btn.cancel", "取消"))
         b_ok.clicked.connect(self.close)
         b_cancel.clicked.connect(self.close)
         row.addStretch(1)
@@ -230,7 +252,7 @@ class ColorButton(QPushButton):
         super().__init__()
         self.setFixedSize(30, 24)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip("点击选择颜色")
+        self.setToolTip(T("ui.color_btn_tip", "点击选择颜色"))
         self._picker = None   # 颜色选择浮层（复用单实例，再点击关闭）
         self.set_color(tuple(color))
 
@@ -307,8 +329,8 @@ class ThemeSpinBox(QWidget):
             b.setProperty("kind", "spinner")
             b.setFixedSize(24, 14)
             b.setCursor(Qt.PointingHandCursor)
-        self.b_up.setToolTip("增加")
-        self.b_down.setToolTip("减少")
+        self.b_up.setToolTip(T("ui.spin_up", "增加"))
+        self.b_down.setToolTip(T("ui.spin_down", "减少"))
         self.b_up.clicked.connect(self.spin.stepUp)
         self.b_down.clicked.connect(self.spin.stepDown)
         btn_col.addWidget(self.b_up)

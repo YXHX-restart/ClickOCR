@@ -94,6 +94,14 @@ def verify_models(names=None, directory=None) -> list:
                 problems.append((name, "SHA256 不符（文件被替换或下载不完整）"))
         except OSError as e:
             problems.append((name, f"读取失败：{e}"))
+    if want is not None:
+        # 点名的文件若不在清单里，上面那圈（遍历清单）根本看不到它 —— 会静默放行。
+        # 典型后果：新增档位只改了 _V6_MODELS、忘了更新清单，保护看着生效实际没做。
+        listed = {ln.split()[2] for ln in lines
+                  if len(ln.split()) >= 6 and ln.split()[0].isdigit()
+                  and len(ln.split()[-1]) == 64}
+        for name in sorted(want - listed):
+            problems.append((name, "清单中没有该文件（无法校验，请更新清单）"))
     return problems
 
 

@@ -69,7 +69,7 @@ class UiTabMixin:
             width=_W5)
         hist_row = QHBoxLayout()
         hist_row.setSpacing(4)
-        lbl_w = QLabel(T("ui.hist_w", "宽"))
+        lbl_w = QLabel(T("ui.hist_w", "宽度"))
         lbl_w.setMinimumWidth(30)
         hist_row.addWidget(lbl_w)
         hist_row.addWidget(self.spin_hist_width)
@@ -131,7 +131,7 @@ class UiTabMixin:
         form.addRow(T("ui.overlay_border", "窗口边框"), overlay_row)
         self._attach_hint(
             form, overlay_row,
-            T("ui.overlay_border_hint", "宽度 0 = 不显示边框（[ui] 配置段）。"))
+            T("ui.overlay_border_hint", "宽度 0 = 不显示边框（[selection]/[result] 配置段）。"))
 
         # 二维码识别边框（[ui] qr_border_color，默认紫）
         self.btn_qr_color = _ColorButton(
@@ -158,7 +158,7 @@ class UiTabMixin:
         form.addRow("", self.chk_toolbar)
 
         # 纯信息状态栏全局开关
-        self.chk_strip = QCheckBox(T("ui.strip", "状态栏（纯信息）"))
+        self.chk_strip = QCheckBox(T("ui.strip", "状态栏"))
         self.chk_strip.setChecked(
             self._cfg.getbool("ui", "strip_enabled", True))
         self.chk_strip.setToolTip(
@@ -166,19 +166,19 @@ class UiTabMixin:
         form.addRow("", self.chk_strip)
 
         # 识别文字蓝色框默认显示
-        self.chk_text_boxes = QCheckBox(T("ui.text_boxes", "图片文字边框"))
+        self.chk_text_boxes = QCheckBox(T("ui.text_boxes", "OCR文字边框"))
         self.chk_text_boxes.setChecked(
             self._cfg.getbool("ui", "show_text_boxes", True))
         form.addRow("", self.chk_text_boxes)
 
         # 标注栏默认开启
-        self.chk_anno_default = QCheckBox(T("ui.anno_bar", "截图标注栏"))
+        self.chk_anno_default = QCheckBox(T("ui.anno_bar", "标注栏"))
         self.chk_anno_default.setChecked(
             self._cfg.getbool("ui", "anno_toolbar_default", False))
         form.addRow("", self.chk_anno_default)
 
         # 标注工具参数永久化记录（颜色/线宽/字号/加粗/斜体/马赛克模式）
-        self.chk_anno_persist = QCheckBox(T("ui.anno_persist", "永久化记录标注工具参数"))
+        self.chk_anno_persist = QCheckBox(T("ui.anno_persist", "记录标注参数"))
         self.chk_anno_persist.setChecked(
             self._cfg.getbool("ui", "persist_params", True))
         self.chk_anno_persist.setToolTip(

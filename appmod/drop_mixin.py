@@ -29,6 +29,7 @@ from hotkey import HotkeyHost
 from platform_compat import capabilities, scroll_capture_supported
 from platform_compat.fonts import ui_font_family
 from ui.base.theme import apply_theme, resolve_theme, install_system_follow
+from ui.base.texts import T
 from ui.windows.selection import SelectionOverlay
 from ui.windows.result_overlay import ResultOverlay
 from appmod.workers import (OcrWorker, TableWorker, EngineLoader,
@@ -90,8 +91,9 @@ class DropMixin:
         self._set_engine_status("就绪")
         log.error("拖放导入失败：%s", msg)
         try:
-            self.tray.showMessage("ClickOCR", f"拖放导入失败：{msg}",
-                                  QSystemTrayIcon.Warning, 3000)
+            self.tray.showMessage(
+                "ClickOCR", T("app.drop_import_fail", "拖放导入失败：") + str(msg),
+                QSystemTrayIcon.Warning, 3000)
         except Exception:  # noqa: BLE001
             pass
 

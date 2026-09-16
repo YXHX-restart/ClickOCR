@@ -29,6 +29,7 @@ from hotkey import HotkeyHost
 from platform_compat import capabilities, scroll_capture_supported
 from platform_compat.fonts import ui_font_family
 from ui.base.theme import apply_theme, resolve_theme, install_system_follow
+from ui.base.texts import T
 from ui.windows.selection import SelectionOverlay
 from ui.windows.result_overlay import ResultOverlay
 from appmod.workers import OcrWorker, TableWorker, EngineLoader
@@ -41,8 +42,9 @@ class EngineMixin:
         try:
             img = self.svc.grab_region(raw)
         except Exception as e:  # noqa: BLE001
-            self.tray.showMessage("ClickOCR", f"截图失败：{e}",
-                                  QSystemTrayIcon.Warning, 3000)
+            self.tray.showMessage(
+                "ClickOCR", T("app.grab_fail", "截图失败：") + str(e),
+                QSystemTrayIcon.Warning, 3000)
             # 失败同样要恢复截图前被隐藏的浮窗（start_capture 已把它们全部
             # 藏进 _hidden_windows）——否则状态栏/面板永久消失，只能重开。
             # 对照 capture_fullscreen 的失败分支有恢复，此处原先漏了。
@@ -256,12 +258,14 @@ class EngineMixin:
         """Ctrl+Shift+T / 表格识别：异步执行 SLANet 表格结构识别 + 弹出预览面板。"""
         if self.table_engine is None:
             self.tray.showMessage(
-                "ClickOCR", "表格识别不可用（rapid_table 未安装）",
+                "ClickOCR",
+                T("table.unavailable", "表格识别不可用（rapid_table 未安装）"),
                 QSystemTrayIcon.Warning, 3000)
             return
         if getattr(self, "_table_busy", False):
-            self.tray.showMessage("ClickOCR", "表格识别进行中，请稍候",
-                                  QSystemTrayIcon.Information, 2000)
+            self.tray.showMessage(
+                "ClickOCR", T("table.busy", "表格识别进行中，请稍候"),
+                QSystemTrayIcon.Information, 2000)
             return
         try:
             # 用贴图窗口保存的原始截图（避免抓屏抓到屏幕上的贴图/网格线框）
@@ -269,8 +273,9 @@ class EngineMixin:
             if img is None:
                 img = self.svc.grab_region(ov.raw_bbox)
         except Exception as e:  # noqa: BLE001
-            self.tray.showMessage("ClickOCR", f"截图失败：{e}",
-                                  QSystemTrayIcon.Warning, 3000)
+            self.tray.showMessage(
+                "ClickOCR", T("app.grab_fail", "截图失败：") + str(e),
+                QSystemTrayIcon.Warning, 3000)
             return
         ov._set_status("表格识别中…（首次约 2-3s 加载模型）")
         w = self._table_worker
@@ -305,8 +310,9 @@ class EngineMixin:
         except Exception:  # noqa: BLE001
             pass
         if not result.cells and not result.html:
-            self.tray.showMessage("ClickOCR", "未检测到表格结构",
-                                  QSystemTrayIcon.Warning, 2500)
+            self.tray.showMessage(
+                "ClickOCR", T("table.no_structure", "未检测到表格结构"),
+                QSystemTrayIcon.Warning, 2500)
             return
         if self._table_pending_window:     # 用户长按/双击时尚未识别完
             self._table_pending_window = False
@@ -354,8 +360,9 @@ class EngineMixin:
         ov = self._live_overlay()          # 统一存活校验（见 FloatMixin._live_overlay）
         if ov is not None:
             ov._set_status("表格识别失败")
-        self.tray.showMessage("ClickOCR", f"表格识别失败：{msg}",
-                              QSystemTrayIcon.Warning, 4000)
+        self.tray.showMessage(
+            "ClickOCR", T("table.fail", "表格识别失败：") + str(msg),
+            QSystemTrayIcon.Warning, 4000)
 
 
     def _close_table_panel(self, panel):

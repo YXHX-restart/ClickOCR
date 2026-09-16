@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from ocr import RapidOcrEngine
 from screenshot import ScreenshotService
+from ui.base.texts import T
 
 
 class HotkeyThread(QThread):
@@ -53,7 +54,7 @@ class HotkeyThread(QThread):
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("ClickOCR 测试 (M1·β)")
+        self.setWindowTitle(T("dev.title", "ClickOCR 测试 (M1·β)"))
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
         self.resize(520, 720)
 
@@ -61,10 +62,10 @@ class MainWindow(QWidget):
         self.svc = ScreenshotService()
 
         # --- 控件 ---
-        self.btn = QPushButton("截图识别  (Ctrl+Shift+R)")
+        self.btn = QPushButton(T("dev.capture", "截图识别  (Ctrl+Shift+R)"))
         self.btn.clicked.connect(self.do_capture)
 
-        self.status = QLabel("引擎就绪，点击按钮或按热键测试")
+        self.status = QLabel(T("dev.ready", "引擎就绪，点击按钮或按热键测试"))
         self.preview = QLabel()
         self.preview.setMinimumHeight(280)
         self.preview.setStyleSheet("border:1px solid #888; background:#222;")
@@ -81,7 +82,7 @@ class MainWindow(QWidget):
         lay.addLayout(top)
         lay.addWidget(self.status)
         lay.addWidget(self.preview)
-        lay.addWidget(QLabel("识别结果（单击复制）："))
+        lay.addWidget(QLabel(T("dev.result_label", "识别结果（单击复制）：")))
         lay.addWidget(self.list, 1)
 
         # --- 热键 ---
@@ -91,7 +92,7 @@ class MainWindow(QWidget):
 
     # ---- 主线程捕获 ----
     def do_capture(self):
-        self.status.setText("截图中 ...")
+        self.status.setText(T("dev.capturing", "截图中 ..."))
         QApplication.processEvents()
         try:
             t0 = time.time()
@@ -110,16 +111,17 @@ class MainWindow(QWidget):
                 self.list.addItem(item)
 
             self.status.setText(
-                f"识别到 {len(boxes)} 个文字块 · 耗时 {cost:.2f}s"
+                T("dev.found", "识别到 {n} 个文字块 · 耗时 {cost:.2f}s").format(
+                    n=len(boxes), cost=cost)
             )
         except Exception as e:  # noqa: BLE001
-            self.status.setText(f"出错：{e}")
+            self.status.setText(T("dev.error", "出错：") + str(e))
             QMessageBox.critical(self, "ClickOCR", f"捕获失败：\n{e}")
 
     def on_item_clicked(self, item: QListWidgetItem):
         text = item.data(Qt.UserRole)
         QApplication.clipboard().setText(text)
-        self.status.setText(f"已复制：{text[:40]}")
+        self.status.setText(T("dev.copied", "已复制：") + str(text[:40]))
 
     # ---- 辅助 ----
     @staticmethod

@@ -101,7 +101,7 @@ class _ResizeHandle(QWidget):
         self._start = None
         self._start_geo = None
         self._set_cursor()
-        self.setToolTip("拖动调整窗体大小")
+        self.setToolTip(T("ui.resize_grip_tip", "拖动调整窗体大小"))
 
     def _set_cursor(self):
         e = self._edges
@@ -357,10 +357,10 @@ class HistoryPanel(CardWindow):
         self.list_fav = QListWidget()
         self.list_fav.itemDoubleClicked.connect(self._on_double)
         self.tabs.addTab(self.list_all, T("hist.tab_all", "全部"))
-        self.tabs.addTab(self.list_no_text, T("hist.tab_no_text", "无文字"))
-        self.tabs.addTab(self.list_has_text, T("hist.tab_has_text", "有文字"))
-        self.tabs.addTab(self.list_has_qr, T("hist.tab_has_qr", "条码"))
-        self.tabs.addTab(self.list_has_anno, T("hist.tab_has_anno", "有标注"))
+        self.tabs.addTab(self.list_no_text, T("hist.tab_no_text", "图"))
+        self.tabs.addTab(self.list_has_text, T("hist.tab_has_text", "字"))
+        self.tabs.addTab(self.list_has_qr, T("hist.tab_has_qr", "码"))
+        self.tabs.addTab(self.list_has_anno, T("hist.tab_has_anno", "标"))
         self.tabs.addTab(self.list_fav, T("hist.tab_fav", "收藏"))
         self.card_lay.addWidget(self.tabs, 1)
 
@@ -368,7 +368,7 @@ class HistoryPanel(CardWindow):
         #   （[software] drop_ocr_auto，与软件设置「拖入图片后自动 OCR」同源）
         # 作为 self.tabs 的子控件叠加在标签栏末行右侧：水平贴最右端，
         # 垂直与标签文字同一行对齐。
-        self._cap_btn = QPushButton(T("hist.btn_drop_ocr", "拖入OCR"), self.tabs)
+        self._cap_btn = QPushButton(T("hist.btn_drop_ocr", "识别"), self.tabs)
         self._cap_btn.setProperty("kind", "corner")
         self._cap_btn.setCheckable(True)
         self._cap_btn.setCursor(Qt.PointingHandCursor)
@@ -397,7 +397,7 @@ class HistoryPanel(CardWindow):
 
         # 公告：提示可将图片拖出到桌面 / 微信 / QQ / WorkBuddy 等
         hint = QLabel(T("hist.drag_hint",
-                        "提示：拖动缩略图即可把图片发送到桌面 / 微信 / QQ / WorkBuddy 等"))
+                        "提示：拖动缩略图即可把图片发送到桌面等"))
         hint.setProperty("kind", "info")
         hint.setWordWrap(True)
         self.card_lay.addWidget(hint)
@@ -724,7 +724,8 @@ class HistoryPanel(CardWindow):
         _tier = (r.get("model_tier") or "").strip()
         info = QLabel(_fmt_time(r["created_at"])
                       + (f" · {_tier}" if _tier else "")
-                      + (" · ★ 收藏" if r["is_favorite"] else ""))
+                      + (T("hist.fav_mark", " · ★ 收藏")
+                         if r["is_favorite"] else ""))
         info.setProperty("kind", "info")
         mid.addWidget(lab)
         mid.addWidget(info)
@@ -852,9 +853,9 @@ class HistoryPanel(CardWindow):
         from ui.base.icon import icon as svg_icon
         from ui.base.theme import icon_color, accent_color
         ico = icon_color()
-        a_copy_orig = QAction(T("hist.copy_orig", "复制原图"), self)
+        a_copy_orig = QAction(T("hist.copy_orig", "复制"), self)
         a_copy_orig.setIcon(svg_icon("copy", color=ico, size=16))
-        a_copy_img = QAction(T("hist.copy_img", "复制图片（带标注）"), self)
+        a_copy_img = QAction(T("hist.copy_img", "复制（标注）"), self)
         a_copy_img.setIcon(svg_icon("copy", color=ico, size=16))
         a_fav = QAction(
             T("hist.unfav" if fav else "hist.fav",
@@ -1023,8 +1024,9 @@ class HistoryPanel(CardWindow):
                                         color=accent_color(), size=20))
                 info = getattr(w, "_info_label", None)
                 if info is not None:
-                    info.setText(info.text().replace(" · ★ 收藏", "")
-                                 + (" · ★ 收藏" if fav else ""))
+                    _mark = T("hist.fav_mark", " · ★ 收藏")
+                    info.setText(info.text().replace(_mark, "")
+                                 + (_mark if fav else ""))
                 break
 
     def _toggle_fav(self, rid, fav: bool):

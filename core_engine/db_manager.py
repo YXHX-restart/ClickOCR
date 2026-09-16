@@ -187,36 +187,94 @@ CREATE TABLE IF NOT EXISTS image_layout (
 
 
 class DBManager:
-    """SQLite 统一读写。线程安全：每操作短连接 + 进程内锁。"""
+    """SQLite 统一读写。
+
+    **连接**：每线程一个长连接（`threading.local` 缓存），不再每操作
+    `sqlite3.connect()` + `close()`。短连接的代价不只是 open：`connect()` 每次都要
+    解析路径、加文件锁、跑两遍 PRAGMA，而历史面板翻一页就是十几次读写。
+
+    **锁**：读写分离。
+      - 写走 `_write_lock` 串行化 —— SQLite 同一时刻只允许一个写者，显式串行比
+        依赖 `busy_timeout` 重试更可预期；
+      - 读**不加锁** —— WAL 下读不阻塞写、写不阻塞读，UI 线程读历史不再被工作
+        线程的写卡住（原实现是一把全局锁把读写全部串行化）。
+
+    每线程的连接由 `threading.local` 持有，线程结束即随对象销毁而关闭；
+    `close()` 可显式关闭**当前线程**的连接。
+    """
 
     def __init__(self, db_path: str | Path, enable_vec0: bool = True):
         self.db_path = Path(db_path)
-        self._lock = threading.Lock()
+        self._write_lock = threading.Lock()
+        self._tls = threading.local()
         self.vec0_available = False
         self._vec0_enabled = enable_vec0
 
     # ---- 连接与建库 ----
     def _connect(self) -> sqlite3.Connection:
+        """新建一个连接（**不**进入线程缓存）。"""
         conn = sqlite3.connect(str(self.db_path), timeout=10)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 8000")
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
+    def _conn(self) -> sqlite3.Connection:
+        """取本线程的连接（不存在则建并缓存）。"""
+        conn = getattr(self._tls, "conn", None)
+        if conn is None:
+            conn = self._connect()
+            self._tls.conn = conn
+        return conn
+
+    def close(self) -> None:
+        """关闭**当前线程**的连接（幂等）。
+
+        不提供跨线程关闭：对别的线程正在使用的连接调用 close() 会让它正在跑的
+        语句崩掉。其它线程的连接在其线程结束后由 GC 关闭（`sqlite3.Connection`
+        析构会 close）。
+        """
+        conn = getattr(self._tls, "conn", None)
+        if conn is None:
+            return
+        try:
+            conn.close()
+        except Exception:                # noqa: BLE001 已关闭/句柄失效：忽略
+            pass
+        self._tls.conn = None
+
+    def _write(self, fn):
+        """在写锁内执行 `fn(conn)` 并提交；异常回滚。
+
+        长连接下**必须**显式回滚：留下半截事务会让同线程后续读看到未提交数据，
+        并且一直占着写锁把其它写者挡到 busy_timeout 超时（短连接靠 close 兜住了
+        这个问题）。
+        """
+        with self._write_lock:
+            conn = self._conn()
+            try:
+                out = fn(conn)
+                conn.commit()
+                return out
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:        # noqa: BLE001 回滚失败不掩盖原异常
+                    pass
+                raise
+
     def init_db(self) -> bool:
         """建库（幂等）。返回 vec0 是否可用。"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._lock:
-            conn = self._connect()
-            try:
-                conn.execute("PRAGMA journal_mode = WAL")
-                conn.executescript(_SCHEMA)
-                self._migrate(conn)
-                if self._vec0_enabled:
-                    self._try_create_vec0(conn)
-                conn.commit()
-            finally:
-                conn.close()
+
+        def _init(conn):
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.executescript(_SCHEMA)
+            self._migrate(conn)
+            if self._vec0_enabled:
+                self._try_create_vec0(conn)
+
+        self._write(_init)
         return self.vec0_available
 
     def _migrate(self, conn: sqlite3.Connection) -> None:
@@ -272,51 +330,28 @@ class DBManager:
             self.vec0_available = False
             logger.warning("sqlite-vec 不可用，跳过 vec0 表（%s）；M6 启用前需安装", e)
 
-    # ---- 通用执行 ----
+    # ---- 语句执行（写走写锁；读不加锁，见类文档）----
+
     def execute(self, sql: str, params: tuple = ()) -> int:
         """执行写语句，返回 rowcount（注意：INSERT 时恒为 1，不是新记录 id）。"""
-        with self._lock:
-            conn = self._connect()
-            try:
-                cur = conn.execute(sql, params)
-                conn.commit()
-                return cur.rowcount
-            finally:
-                conn.close()
+        return self._write(lambda conn: conn.execute(sql, params).rowcount)
 
     def execute_returning_id(self, sql: str, params: tuple = ()) -> int:
         """执行 INSERT 并返回新记录自增 id。
 
-        SQLite 的 last_insert_rowid 必须与 INSERT 在**同一连接**内读取，
-        而 execute() 每次短连接后即关闭，故单独提供本方法。
+        `last_insert_rowid` 必须与 INSERT 在**同一连接**内读取 —— 连接是线程内
+        复用的，故 INSERT 与取 lastrowid 天然同连接。
         """
-        with self._lock:
-            conn = self._connect()
-            try:
-                cur = conn.execute(sql, params)
-                conn.commit()
-                return int(cur.lastrowid or 0)
-            finally:
-                conn.close()
+        def _run(conn):
+            cur = conn.execute(sql, params)
+            return int(cur.lastrowid or 0)
+        return self._write(_run)
 
     def executemany(self, sql: str, seq) -> int:
-        with self._lock:
-            conn = self._connect()
-            try:
-                cur = conn.executemany(sql, seq)
-                conn.commit()
-                return cur.rowcount
-            finally:
-                conn.close()
+        return self._write(lambda conn: conn.executemany(sql, seq).rowcount)
 
     def query(self, sql: str, params: tuple = ()) -> List[dict]:
-        with self._lock:
-            conn = self._connect()
-            try:
-                cur = conn.execute(sql, params)
-                return [dict(r) for r in cur.fetchall()]
-            finally:
-                conn.close()
+        return [dict(r) for r in self._conn().execute(sql, params).fetchall()]
 
     def query_one(self, sql: str, params: tuple = ()) -> Optional[dict]:
         """只取首行。单独走 fetchone 路径，不经 query() 的全量 fetchall。
@@ -324,13 +359,8 @@ class DBManager:
         调用点多用于 COUNT(*) / 按 id 取单条，结果集本就一行；复用 query()
         会把整个结果集先物化成 list 再取 [0]，属于无谓的内存与时间开销。
         """
-        with self._lock:
-            conn = self._connect()
-            try:
-                row = conn.execute(sql, params).fetchone()
-                return dict(row) if row is not None else None
-            finally:
-                conn.close()
+        row = self._conn().execute(sql, params).fetchone()
+        return dict(row) if row is not None else None
 
     def query_tuples(self, sql: str, params: tuple = ()) -> List[tuple]:
         """按列取值的轻量查询：返回「元组列表」，不构造每行 dict。
@@ -339,12 +369,7 @@ class DBManager:
         id/文件名/文件大小），省掉 N 次 Row→dict 构造；配合调用只 SELECT
         必要列（不把大 JSON 列一起拉回来），瞬时分配与 GC 压力都随之下降。
         """
-        with self._lock:
-            conn = self._connect()
-            try:
-                return [tuple(r) for r in conn.execute(sql, params).fetchall()]
-            finally:
-                conn.close()
+        return [tuple(r) for r in self._conn().execute(sql, params).fetchall()]
 
     def table_names(self) -> List[str]:
         rows = self.query(
@@ -440,10 +465,15 @@ def _build_search_clause(keyword: str, favorite_only: bool = False):
         # 之类会捞出一堆根本不含该词的记录。改用 json_each 只看每个标注的 text/num
         # 两个用户可见字段；json_valid 兜住历史里的脏数据（非法 JSON 会让
         # json_each 直接抛错，把整条搜索带崩）。
+        # 路径 `$.items` 必须与 ui/core/anno_core.anno_to_json 的序列化格式一致
+        # （`{"version": N, "items": [...]}`）—— 写成别的键名时 json_each 对不存在的
+        # 路径**静默返回 0 行**、不报错，于是「搜标注里的文字」会彻底失效而毫无迹象
+        # （曾有 `$.marks` 与实际格式不符，靠这一行修掉；tests/test_db_manager.py
+        # 用真实序列化器造数据守住它）。
         wheres.append(
             "(ocr_text LIKE ? ESCAPE '\\'"
             " OR (json_valid(annotations) AND EXISTS ("
-            "   SELECT 1 FROM json_each(annotations, '$.marks')"
+            "   SELECT 1 FROM json_each(annotations, '$.items')"
             "   WHERE json_extract(value, '$.text') LIKE ? ESCAPE '\\'"
             "      OR CAST(json_extract(value, '$.num') AS TEXT)"
             "         LIKE ? ESCAPE '\\')))"

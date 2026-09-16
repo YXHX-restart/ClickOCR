@@ -33,11 +33,19 @@ from config import ConfigManager
 from platform_compat import IS_WINDOWS
 from platform_compat.fonts import ui_font_family
 from ui.base.hotkey_keys import parse_qt_combo
+from ui.base.texts import T
 from ui.base.widgets import screen_available_geometry, desktop_union_available
 from ui.core.table_detect import (          # 表格检测纯算法（无 Qt 依赖）
     _bbox, _bbox_center, build_blobs,
     _detect_table_lines, _coords_table_grid, map_cell_texts,
 )
+
+from ui.windows.overlay.anno_session import AnnoMixin
+from ui.windows.overlay.pin_behavior import PinMixin
+from ui.windows.overlay.table_view import TableViewMixin
+from ui.windows.overlay.text_select import TextSelectMixin
+from ui.windows.overlay.zoom_nav import ZoomNavMixin
+
 
 
 def _qt_flag_value(flag) -> int:
@@ -55,37 +63,10 @@ def _qt_flag_value(flag) -> int:
 # 各只建一次；单个字符的 advance 也按同一 key 缓存（字符集有限：ASCII + 常用汉字）。
 # 数值与「每次新建 font/metrics 现算」逐位一致（同样的 pixelSize / 同样的 family
 # 回退链），因此文字选区几何不变。
-_FONT_CACHE: dict = {}
-_FM_CACHE: dict = {}
-_CHAR_ADV_CACHE: dict = {}
-_CHAR_ADV_CACHE_MAX = 8192     # 每个 (family, pixel_size) 最多缓存的字符数
 
 
-def _font_and_metrics(family: str, pixel_size: int):
-    """按 (family, pixel_size) 复用 QFont / QFontMetricsF（各只建一次）。"""
-    key = (family, pixel_size)
-    fm = _FM_CACHE.get(key)
-    if fm is not None:
-        return fm
-    font = QFont(family)
-    font.setPixelSize(pixel_size)
-    _FONT_CACHE[key] = font            # 持有 QFont 引用：QFontMetricsF 不接管所有权
-    fm = QFontMetricsF(font)
-    _FM_CACHE[key] = fm
-    return fm
 
 
-def _char_advance(key, fm, ch: str) -> float:
-    """单字符 advance（进程级缓存）；缓存满则直接现算，不无限增长。"""
-    cache = _CHAR_ADV_CACHE.get(key)
-    if cache is None:
-        cache = _CHAR_ADV_CACHE[key] = {}
-    w = cache.get(ch)
-    if w is None:
-        w = fm.horizontalAdvance(ch)
-        if len(cache) < _CHAR_ADV_CACHE_MAX:
-            cache[ch] = w
-    return w
 
 
 class _BorderOverlay(QWidget):
@@ -147,7 +128,8 @@ class _SelectionHighlightItem(QGraphicsItem):
         painter.fillPath(self._path, self._brush)
 
 
-class ResultOverlay(QGraphicsView):
+class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
+                    TextSelectMixin, AnnoMixin, QGraphicsView):
     closed = Signal()
     copied = Signal(str)
     reocr_requested = Signal()          # Ctrl+R：请求重新抓取当前区域并 OCR
@@ -434,7 +416,7 @@ class ResultOverlay(QGraphicsView):
         self.btn_close.setObjectName("overlay_close")
         self.btn_close.setCursor(Qt.PointingHandCursor)
         self.btn_close.setFocusPolicy(Qt.NoFocus)   # 点击后不显示焦点虚线框
-        self.btn_close.setToolTip("关闭图片 (Esc)")
+        self.btn_close.setToolTip(T("ui.close_img_tip", "关闭图片 (Esc)"))
         self.btn_close.setFixedSize(32, 32)
         self.btn_close.setWindowFlags(
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -448,130 +430,18 @@ class ResultOverlay(QGraphicsView):
         self._pin_card = None
         self._pin_dot = None
 
-    def _ensure_pin_dot(self):
-        """懒创建钉图钉子（PinDot 独立小窗）；信号接回本窗口。"""
-        if self._pin_dot is not None:
-            return self._pin_dot
-        from ui.components.pin_dot import PinDot
-        dot = PinDot()
-        dot.clicked.connect(self._on_pin_clicked)
-        dot.double_clicked.connect(self._on_pin_double)
-        dot.drag.connect(self._on_pin_drag)
-        dot.hover_in.connect(self._on_pin_hover_in)
-        dot.hover_out.connect(self._on_pin_hover_out)
-        self._pin_dot = dot
-        self._fgroup.add(dot)             # 参与 z 序（钉图态提级）
-        return dot
 
     # ---- 钉图状态（钉子 = 独立 PinDot；图片+状态栏+工具栏一起隐藏）----
-    def set_pinned(self, pinned: bool, hide_img: bool = False):
-        """钉图：pinned=True 隐藏图片（可选）/状态栏/工具栏，只留 PinDot 钉子；
-        False 恢复全部浮层。钉子定位由 app._pin_overlay 统一处理。"""
-        self._pinned = pinned
-        if pinned:
-            self.btn_close.hide()          # 关闭按钮消失
-            if self._navigator is not None:
-                self._navigator.hide()     # 导航图一起隐藏
-            if self._status_strip is not None:
-                self._status_strip.hide()  # 状态栏一起隐藏
-            if self._toolbar is not None:
-                self._toolbar.close_picker()
-                self._toolbar.hide()       # 工具栏一起隐藏
-        else:
-            self._layout_close_btn()       # 立即重定位关闭按钮（钉图期间图片可能移动过）
-            self._hide_pin_card()
-            if self._status_strip is not None:
-                self._status_strip.show()
-            if self._toolbar is not None:
-                self._toolbar.show()
-            if self._navigator is not None and self._nav_on:
-                self._navigator.show()
-                self._layout_navigator()
-        if hide_img:
-            self.hide()                    # 图片收进钉子（PinDot 留在桌面）
-        else:
-            self.show()
-            self._fgroup.raise_all()
-            if not pinned:
-                self._fgroup.follow()      # 取消钉图：恢复正常位置/尺寸
 
     # ---- PinDot 钉子交互（单击/双击/拖动/悬停）----
-    def _on_pin_clicked(self):
-        """单击钉子：取消钉图（恢复图片 + 状态栏 + 工具栏）。"""
-        self._hide_pin_card()
-        if self._toolbar is not None:
-            self._toolbar.btn_pin.setChecked(False)   # 信号链 → _unpin → 恢复
-        else:
-            self.set_pinned(False)
 
-    def _on_pin_double(self):
-        """双击钉子：收起图片（钉子留在桌面）/ 图片收起时双击恢复。"""
-        if self.isVisible():
-            # 收起前记住图片位置：恢复时回原位（不依赖钉子当前位置反推，
-            # 避免钉子位置漂移时图片飞到屏幕外 = "图片不保持"）
-            self._pin_restore = (self.x(), self.y())
-            self.hide()                    # 收起图片，钉子浮桌面
-        else:
-            if getattr(self, "_pin_restore", None) is not None:
-                self.move(*self._pin_restore)      # 回原位
-            else:
-                dot = self._pin_dot                # 兜底：右下角对准钉子
-                if dot is not None:
-                    self.move(dot.x() + 38 - self.width(),
-                              dot.y() + 38 - self.height())
-            self.show()                    # 恢复图片显示
-            self._fgroup.raise_all()
-            self._fgroup.follow()
 
-    def _on_pin_drag(self, delta):
-        """拖动钉子 → 图片窗口跟着移动（隐藏态也同步 _pin_restore，
-        确保双击恢复时落到拖动后的位置，不回弹）。"""
-        self.move(self.x() + delta.x(), self.y() + delta.y())
-        self._pin_restore = (self.x(), self.y())
 
-    def _on_pin_hover_in(self):
-        if self.isVisible():               # 图片显示时不显示卡片
-            return
-        self._show_pin_card()
 
-    def _on_pin_hover_out(self):
-        self._hide_pin_card()
 
     # ---- 悬停信息卡片（图片收起时显示缩略图 + 信息，类似历史记录）----
-    def _show_pin_card(self):
-        """悬停钉子：显示缩略图 + OCR 文字/尺寸信息卡片。"""
-        from ui.components.pin_card import PinCard
-        if self._pin_card is None:
-            self._pin_card = PinCard()
-        self._pin_card.set_image(self.img)
-        text = "\n".join(b.text for b in self.boxes) if self.boxes else ""
-        info = f"{self.img.shape[1]}×{self.img.shape[0]}"
-        if self.history_id:
-            info += f" · #{self.history_id}"
-        self._pin_card.set_info(text, info)
-        # 定位：钉子左上方
-        dot = self._pin_dot
-        g = dot.mapToGlobal(dot.rect().topLeft()) if dot is not None \
-            else self.mapToGlobal(self.rect().topLeft())
-        self._pin_card.show_near(g)
-        self._pin_card.show()
-        self._pin_card.raise_()
 
-    def _hide_pin_card(self):
-        if self._pin_card is not None:
-            self._pin_card.hide()
 
-    def _close_sub_windows(self):
-        """关闭与图片关联的次级浮窗（标注工具段子浮层、快捷键面板等），
-        无动画钉图时使用，避免浮窗残留。"""
-        if self._toolbar is not None:
-            try:
-                self._toolbar.close_picker()   # 关闭标注子浮层 + 调色板
-            except Exception:            # noqa: BLE001
-                pass
-        if self._shortcut_panel is not None:
-            self._shortcut_panel.close()
-            self._shortcut_panel = None
 
     def _layout_close_btn(self):
         """关闭按钮定位：窗外/窗内位置以图片**右上角点为镜像**（180° 点对称）。
@@ -706,225 +576,26 @@ class ResultOverlay(QGraphicsView):
         else:
             self._on_boxes_toggled(not self._show_boxes)
 
-    def _toggle_table(self):
-        """E 快捷键：切换表格模式（等价「表格」按钮单击；无修饰键才触发，
-        避免 Ctrl+E 等误开；标注态由 QWERTYU 的 E=箭头 优先拦截）。"""
-        if self._toolbar is not None:
-            self._toolbar.btn_table.setChecked(
-                not self._toolbar.btn_table.isChecked())
-        else:
-            self._on_table_mode(not getattr(self, "_table_mode", False))
 
-    def _handle_toolbar_key(self, e) -> bool:
-        """常用态工具栏键（Q/W/E/F 二维码/文字框/表格/收藏）统一分发。
-        标注态返回 False（QWERTYU 由 handle_anno_key 处理，避免工具冲突）。
-        无修饰键才触发；贴图窗口 / 工具栏焦点共用此路径。"""
-        if getattr(self, "_anno_mode", False):
-            return False
-        if e.modifiers() & (Qt.ControlModifier | Qt.AltModifier
-                            | Qt.ShiftModifier | Qt.MetaModifier):
-            return False
-        if self._match_shortcut(e, self._qr_hk):
-            self._toggle_qr()
-            return True
-        if self._match_shortcut(e, self._boxes_hk):
-            self._toggle_boxes()
-            return True
-        if self._match_shortcut(e, self._tool_table_hk):
-            self._toggle_table()
-            return True
-        if self._match_shortcut(e, self._fav_hk):
-            self.fav_requested.emit()
-            return True
-        return False
 
     def _set_boxes_visible(self, visible: bool):
         for it in self._outline:
             it.setVisible(visible)
 
     # ---- 表格模式（纯坐标检测网格 = 只读表格窗口体验）----
-    def _on_table_mode(self, on: bool):
-        """「表格」按钮短按切换：进入 = 用 OCR 块坐标规则检测表格并画网格
-        （不需要 SLANet）；检测不出表格时保留文字框。退出 = 恢复文字框。"""
-        if on and not self.boxes:
-            # 无 OCR 结果（截图后自动 OCR 关闭）：请求 app 临时拉起 OCR
-            self.ocr_needed.emit()
-            return
-        if on:
-            # **按实际检测结果决定是否算「进入表格模式」**：原先先置 True 再看
-            # 检测结果，检测失败时界面是文字模式、交互却按表格模式走
-            # （点击清空选区、滚轮缩放被禁）→ 整个窗口交互锁死。
-            self._table_mode = self._apply_table_view()
-        else:
-            self._table_mode = False
-            self._set_boxes_visible(self._show_boxes)
-            self._hide_table_boxes()
-            self._clear_table_sel()
-            self._set_status("已退出表格模式")
 
-    def _apply_table_view(self) -> bool:
-        """坐标规则检测出表格 → 隐藏文字框显示网格，返回 True；
-        否则保留文字框、返回 False（调用方据此决定是否进入表格模式）。"""
-        self._build_table_grid()
-        if self._table_rows is not None:
-            self._set_boxes_visible(False)
-            self._build_table_boxes()
-            self._show_table_boxes()
-            n_r, n_c = len(self._table_rows), len(self._table_cols)
-            self._set_status(
-                f"表格模式：{n_r} 行 × {n_c} 列 · 拖动框选单元格复制 TSV · "
-                "双击打开窗口 · 再点表格退出")
-            return True
-        self._hide_table_boxes()
-        self._set_boxes_visible(self._show_boxes)
-        self._set_status("未检测到表格结构，仍在文字模式（框选复制文本）")
-        return False
 
-    def _build_table_grid(self):
-        """**表格网格构建（双通道，增强式）**——胶水层：
 
-        1. **像素线检测**（优先，ui.core.table_detect）：截图含完整网格线时，
-           行/列条带直接用真实表格线位置——边界最精确，换行格不拆行；
-           线不足（如无边框表）返回 None。
-        2. **纯坐标启发式**（回退，ui.core.table_detect）：按文字块位置聚类行列。
 
-        任一通道成功 → 设置 _table_rows/_table_cols/_table_row_ids/
-        _table_col_ids/_table_cell_texts（格文本 = 格内文字块拼接）。
-        两条通道都失败 → 保持 None（文字模式，不进入表格视图）。
-        算法本体（检测/聚类/格文本）在 ui/table_detect.py（纯函数，无 Qt）。"""
-        self._table_rows = None
-        self._table_cols = None
-        self._table_cell_texts = {}
-        if not self.boxes:
-            return
-        blobs = build_blobs(self.boxes, self.box_order)
-        if not blobs:
-            return
-        # 1) 像素线检测优先（有网格线时边界最精确）
-        rows, cols = _detect_table_lines(getattr(self, "img", None))
-        if rows is None or cols is None:
-            # 2) 纯坐标启发式回退（无边框表 / 线检测失败）
-            rows, cols = _coords_table_grid(blobs)
-            if rows is None:
-                return
-        self._table_rows = rows
-        self._table_cols = cols
-        self._table_row_ids = list(range(len(rows)))
-        self._table_col_ids = list(range(len(cols)))
-        self._table_cell_texts = map_cell_texts(blobs, rows, cols)
 
-    def _build_table_boxes(self):
-        for it in self._table_boxes:
-            self.scene.removeItem(it)
-        self._table_boxes = []
-        if not self._table_rows:
-            return
-        # 每个网格格画一个矩形框（边界共享、无重叠，体验同表格窗口网格线）
-        c = self._table_border_color
-        for y0, y1 in self._table_rows:
-            for x0, x1 in self._table_cols:
-                item = QGraphicsRectItem(QRectF(x0, y0, x1 - x0, y1 - y0))
-                item.setPen(QPen(QColor(c.red(), c.green(), c.blue(), 170), 1))
-                item.setBrush(QBrush(Qt.NoBrush))
-                item.setZValue(1)   # 第 2 层（表格网格，同 OCR 层）
-                item.setVisible(False)
-                self.scene.addItem(item)
-                self._table_boxes.append(item)
-
-    def _show_table_boxes(self):
-        for it in self._table_boxes:
-            it.setVisible(True)
-
-    def _hide_table_boxes(self):
-        for it in self._table_boxes:
-            it.setVisible(False)
 
     # ---- 表格选取（拖矩形选单元格，同表格窗口）----
-    def _table_hit_cell(self, pt) -> tuple[int, int] | None:
-        for ri, (y0, y1) in enumerate(self._table_rows or []):
-            if y0 <= pt.y() <= y1:
-                for ci, (x0, x1) in enumerate(self._table_cols or []):
-                    if x0 <= pt.x() <= x1:
-                        return ri, ci
-        return None
 
-    def _table_press(self, pt):
-        rc = self._table_hit_cell(pt)
-        if rc is None:
-            self._clear_table_sel()
-            return
-        self._tbl_anchor = rc
-        self._tbl_dragging = True
-        self._tbl_sel = (rc[0], rc[1], rc[0], rc[1])
-        self._draw_table_sel()
 
-    def _table_move(self, pt):
-        if not self._tbl_dragging or self._tbl_anchor is None:
-            return
-        rc = self._table_hit_cell(pt)
-        if rc is None:
-            return
-        r0, c0 = self._tbl_anchor
-        self._tbl_sel = (min(r0, rc[0]), min(c0, rc[1]),
-                         max(r0, rc[0]), max(c0, rc[1]))
-        self._draw_table_sel()
 
-    def _table_release(self):
-        sel = self._tbl_sel
-        if sel is None:
-            return
-        self._copy_table_rect(*sel)
-        self._set_status(
-            f"已复制表格 TSV（{sel[2]-sel[0]+1} 行 × {sel[3]-sel[1]+1} 列）· "
-            "Esc 关闭 / 双击开窗")
 
-    def _draw_table_sel(self):
-        for it in self._tbl_sel_items:
-            self.scene.removeItem(it)
-        self._tbl_sel_items = []
-        if self._tbl_sel is None or not self._table_rows:
-            return
-        r0, c0, r1, c1 = self._tbl_sel
-        # 越界收敛：重识别后新网格可能比旧选区小，_tbl_sel 里的行/列号会指到
-        # _table_rows/_table_cols 之外 —— 保护必须写在真正索引的地方（见
-        # set_boxes 的说明）。旧选区整体越界时收敛到最后一格，不画空。
-        nr, nc = len(self._table_rows), len(self._table_cols or ())
-        if nr == 0 or nc == 0:
-            return
-        r0, r1 = max(0, min(r0, nr - 1)), max(0, min(r1, nr - 1))
-        c0, c1 = max(0, min(c0, nc - 1)), max(0, min(c1, nc - 1))
-        for ri in range(r0, r1 + 1):
-            y0, y1 = self._table_rows[ri]
-            for ci in range(c0, c1 + 1):
-                x0, x1 = self._table_cols[ci]
-                rect = QGraphicsRectItem(QRectF(x0, y0, x1 - x0, y1 - y0))
-                rect.setBrush(QBrush(QColor(0, 160, 120, 90)))
-                rect.setPen(QPen(QColor(0, 180, 130, 200), 1))
-                rect.setZValue(3)
-                self.scene.addItem(rect)
-                self._tbl_sel_items.append(rect)
 
-    def _clear_table_sel(self):
-        for it in self._tbl_sel_items:
-            self.scene.removeItem(it)
-        self._tbl_sel_items = []
-        self._tbl_sel = None
-        self._tbl_anchor = None
-        self._tbl_dragging = False
 
-    def _copy_table_rect(self, r0, c0, r1, c1):
-        """复制选中矩形内的单元格为 TSV（列对齐，同表格窗口复制）。"""
-        lines = []
-        for ri in range(r0, r1 + 1):
-            row = []
-            for ci in range(c0, c1 + 1):
-                row.append(self._table_cell_texts.get((ri, ci), ""))
-            lines.append("\t".join(row))
-        tsv = "\n".join(lines)
-        if tsv:
-            QApplication.clipboard().setText(tsv)
-            self.copied.emit(tsv)
-        self._redraw()
 
     def _do_copy(self):
         if self._table_mode and self._table_rows is not None:
@@ -994,134 +665,14 @@ class ResultOverlay(QGraphicsView):
         self.done_requested.emit(self)   # App 负责补存历史（OCR 可能未完成）
         self.close()
 
-    def _build_geom(self):
-        items = []
-        for i, b in enumerate(self.boxes):
-            x0, y0, x1, y1 = _bbox(b.polygon)
-            items.append((i, (x0 + x1) / 2.0, (y0 + y1) / 2.0))
-        # 阅读顺序：先按行(y)，行内按 x
-        items.sort(key=lambda t: (t[2], t[1]))
-        self.box_order = [t[0] for t in items]
-        self.geom = {}
-        for orig in self.box_order:
-            b = self.boxes[orig]
-            x0, y0, x1, y1 = _bbox(b.polygon)
-            n = len(b.text)
-            chars = self._char_intervals(b.text, x0, x1, y0, y1)
-            self.geom[orig] = dict(x0=x0, y0=y0, x1=x1, y1=y1,
-                                   n=n, chars=chars)
 
-    @staticmethod
-    def _char_intervals(text: str, x0, x1, y0, y1):
-        """按字符真实宽窄比例分配每个字符的 x 区间（英文/标点窄、汉字方正）。
 
-        用 QFontMetrics 量出各字符相对宽度，再等比缩放到框宽，保证：
-        - 区间和恰好等于框宽；
-        - 'i'、'.'、',' 等窄字符占窄区间，'m'、'W'、汉字占宽区间，
-          点击命中与视觉位置严格对齐。
-
-        **收敛点（性能）**：QFont / QFontMetricsF 按 (family, pixel_size) 进程级
-        复用，单字符 advance 也按同一 key 缓存（见模块顶部的 _font_and_metrics /
-        _char_advance）。原实现每块都 `QFont(...)` + `QFontMetricsF(...)` 再逐字符
-        `horizontalAdvance`，一屏 200 块 × 20 字 ≈ 4000 次字体度量，且每次
-        set_boxes（首次识别 / Ctrl+R / 历史恢复 / 补齐识别）全量重算。
-        数值不变：同样的 family、同样的 pixelSize、同样的 horizontalAdvance 结果，
-        仅把重复计算换成查表。
-        """
-        n = len(text)
-        if n == 0:
-            return []
-        pixel_size = max(8, int(round(y1 - y0)))     # 按行高近似字号
-        family = ui_font_family()
-        key = (family, pixel_size)
-        fm = _font_and_metrics(family, pixel_size)
-        widths = [max(1.0, _char_advance(key, fm, ch)) for ch in text]
-        total = sum(widths)
-        scale = (x1 - x0) / total if total > 0 else 1.0
-        chars = []
-        cx = x0
-        for wd in widths:
-            chars.append((cx, cx + wd * scale))
-            cx += wd * scale
-        return chars
-
-    def _caret(self, g, x: float) -> int:
-        """把 x 映射为插入点位置（0..n，即"第几个字符之后"）。
-
-        落在某字符左半 → 该字符前；右半 → 该字符后。到行尾 x≈x1 时返回 n，
-        保证整行/整词/末尾标点都能被完整选中（修复"差个字母/句号"）。
-        """
-        k = 0
-        for (cx0, cx1) in g["chars"]:
-            if x < cx0 + (cx1 - cx0) / 2.0:
-                return k
-            k += 1
-        return k
 
     # ---- 命中检测 ----
-    def _hit(self, scene_pt: QPointF):
-        """返回 (order_pos, caret)，caret∈[0..n]；完全在框外返回 None。"""
-        x, y = scene_pt.x(), scene_pt.y()
-        pad = 4
-        for pos, orig in enumerate(self.box_order):
-            g = self.geom[orig]
-            if (g["x0"] - pad <= x <= g["x1"] + pad and
-                    g["y0"] - pad <= y <= g["y1"] + pad):
-                return (pos, self._caret(g, x))
-        return None
 
-    def _hit_or_clamp(self, scene_pt: QPointF):
-        """拖拽时用：命中则返回命中；在框外则向首/末行或最近行夹紧。"""
-        hit = self._hit(scene_pt)
-        if hit is not None:
-            return hit
-        x, y = scene_pt.x(), scene_pt.y()
-        tops = [self.geom[o]["y0"] for o in self.box_order]
-        bots = [self.geom[o]["y1"] for o in self.box_order]
-        if y < min(tops):
-            return (0, 0)
-        if y > max(bots):
-            last = self.box_order[-1]
-            return (len(self.box_order) - 1, self.geom[last]["n"])
-        for pos, orig in enumerate(self.box_order):
-            g = self.geom[orig]
-            if g["y0"] <= y <= g["y1"]:
-                mid = (g["x0"] + g["x1"]) / 2
-                return (pos, 0 if x < mid else g["n"])
-        return (0, 0)
 
     # ---- 选区归一化与文本拼接 ----
-    @staticmethod
-    def _norm(a, b):
-        ap, ac = a
-        bp, bc = b
-        if ap < bp:
-            return [ap, ac, bp, bc]
-        if ap > bp:
-            return [bp, bc, ap, ac]
-        if ac <= bc:
-            return [ap, ac, ap, bc]
-        return [ap, bc, ap, ac]
 
-    def get_selected_text(self) -> str:
-        out = []
-        for (o0, c0, o1, c1) in self.ranges:
-            parts = []
-            for pos in range(o0, o1 + 1):
-                orig = self.box_order[pos]
-                g = self.geom[orig]
-                txt = self.boxes[orig].text
-                if pos == o0 and pos == o1:
-                    seg = txt[c0:c1]
-                elif pos == o0:
-                    seg = txt[c0:]
-                elif pos == o1:
-                    seg = txt[:c1]
-                else:
-                    seg = txt
-                parts.append(seg)
-            out.append("\n".join(parts))   # 区域内多块按行拼接
-        return "\n".join(out)              # 多区域按选择顺序换行拼接
 
     @property
     def is_drawing(self) -> bool:
@@ -1238,37 +789,7 @@ class ResultOverlay(QGraphicsView):
         if self._status_strip is not None:
             self._status_strip.set_preview(text)
 
-    def _preview_selection(self, immediate: bool = False):
-        """刷新状态栏第 2 行预览；拖动中**防抖** 40ms，最终态立即刷新。
 
-        收敛点（性能）：原实现每个 mouseMoveEvent 都全量拼接选中文本
-        （get_selected_text 跨块切片 + "\n".join），再 setText 到状态栏 QLabel
-        （每帧触发布局与重绘）。拖动时相邻两帧的预览串只差末尾一两个字符，
-        重复计算纯属浪费；人眼对 40ms 的预览滞后无感。
-        故：拖动中（immediate=False）只重启 40ms 单次定时器；**所有最终态**
-        （按下成区 / 松手 / 双击整行 / Ctrl+A 全选 / 复制）走 immediate=True，
-        预览不会滞后于最终结果（定时器同步取消，不会有一次多余的迟到刷新）。
-        """
-        if immediate:
-            t = getattr(self, "_preview_timer", None)
-            if t is not None:
-                t.stop()
-            self._refresh_preview()
-            return
-        t = getattr(self, "_preview_timer", None)
-        if t is None:
-            t = QTimer(self)
-            t.setSingleShot(True)
-            t.setInterval(40)
-            t.timeout.connect(self._refresh_preview)
-            self._preview_timer = t
-        t.start()
-
-    def _refresh_preview(self):
-        if self.active >= 0 and self.ranges:
-            self._set_preview(self.get_selected_text())
-        else:
-            self._set_preview("")
 
     def _redraw(self):
         """按选区重绘高亮：**一条选区 = 一个场景项**（见 _SelectionHighlightItem）。
@@ -1530,59 +1051,8 @@ class ResultOverlay(QGraphicsView):
             or (name == "alt" and bool(mods & Qt.AltModifier)) \
             or (name == "shift" and bool(mods & Qt.ShiftModifier))
 
-    def _apply_transform(self):
-        """统一视图变换：系数 = 几何缩放 × 图片缩放（窗口宽高比与图片解耦后，
-        图片大小只由这两个系数决定，不随窗口边缘拉伸变化）。"""
-        self.resetTransform()
-        self.scale(self._zoom * self._img_zoom / self.dpr,
-                   self._zoom * self._img_zoom / self.dpr)
 
-    def _set_image_zoom(self, zoom: float, anchor: QPointF):
-        """窗口内图片缩放：**只改 transform，绝不动窗口几何**（窗口尺寸不变，
-        图片在窗口内缩放；超出部分靠滚动条/中键平移查看）。
-        以鼠标位置为锚：缩放前后鼠标指向的场景点保持不动（滚动条补偿）。"""
-        zoom = max(0.1, min(10.0, zoom))
-        if abs(zoom - self._img_zoom) < 1e-3:
-            return
-        t0 = self.transform().m11()
-        if t0 <= 0:
-            return
-        self._img_zoom = zoom
-        self._apply_transform()
-        t1 = self.transform().m11()
-        # 滚动条补偿：锚点（视口坐标）下的场景点保持不动。
-        # 正确公式 v1 = (a + v0) * t1/t0 - a（推导：锚点场景坐标 s=(a+v0)/t0，
-        # 缩放后要求 a = s*t1 - v1）。原实现 v0 + a*(1/t0 - 1/t1) 仅在
-        # v0=0（未平移）时近似成立——大图平移后再缩放，鼠标指向点会漂移
-        hb, vb = self.horizontalScrollBar(), self.verticalScrollBar()
-        hb.setValue(int((anchor.x() + hb.value()) * t1 / t0 - anchor.x()))
-        vb.setValue(int((anchor.y() + vb.value()) * t1 / t0 - anchor.y()))
-        self._layout_close_btn()
-        self._fgroup.follow()
-        self._update_navigator()
 
-    def _set_zoom(self, zoom: float, anchor: QPointF):
-        """以窗口内 anchor 点为锚缩放窗口（几何缩放）：窗口尺寸 = 当前基准 × zoom，
-        锚点下场景坐标保持不动（鼠标指向处不漂移）。图片缩放系数 _img_zoom 保留。"""
-        zoom = max(0.05, min(5.0, zoom))
-        if abs(zoom - self._zoom) < 1e-3:
-            return
-        self._zoom = zoom
-        nw = max(1, int(round(self._base_w * zoom)))
-        nh = max(1, int(round(self._base_h * zoom)))
-        # 锚点在窗口内的相对位置（缩放后保持不变）
-        rx = anchor.x() / max(1, self.width())
-        ry = anchor.y() / max(1, self.height())
-        # 新窗口左上角 = 锚点全局位置 - 相对偏移 × 新尺寸
-        g = self.mapToGlobal(anchor.toPoint())
-        nx = g.x() - rx * nw
-        ny = g.y() - ry * nh
-        self.setGeometry(int(nx), int(ny), nw, nh)
-        self._apply_transform()
-        self._layout_close_btn()
-        self._fgroup.follow()
-        self._layout_navigator()
-        self._update_navigator()
 
     # ---- 窗口边缘拉伸（鼠标拖边/角调整窗口大小；图片等比 contain 不变形）----
     _EDGE = 6          # 边缘热区宽度（逻辑像素）
@@ -1593,123 +1063,9 @@ class ResultOverlay(QGraphicsView):
         "tr": Qt.SizeBDiagCursor, "bl": Qt.SizeBDiagCursor,
     }
 
-    def _edge_at(self, pos) -> str | None:
-        """返回鼠标位置命中的拉伸边/角；顶部中间 = 拖动把手区（返回 None，
-        保留原顶部把手移动窗口行为），仅顶边两角可对角拉伸。
-        尺寸以 viewport 为基准（e.position() 是视口坐标，滚动条出现时视口
-        小于窗口，右/下热区落在滚动条内侧）。"""
-        vp = self.viewport()
-        w, h = vp.width(), vp.height()
-        x, y = pos.x(), pos.y()
-        ed = self._EDGE
-        left = x <= ed
-        right = x >= w - ed
-        top = y <= ed
-        bottom = y >= h - ed
-        if top:
-            if x <= ed * 2:
-                return "tl"
-            if x >= w - ed * 2:
-                return "tr"
-            return "t"             # 顶边中间也可拉伸（移动窗口用 Alt+拖动）
-        if bottom:
-            if x <= ed * 2:
-                return "bl"
-            if x >= w - ed * 2:
-                return "br"
-            return "b"
-        if left:
-            return "l"
-        if right:
-            return "r"
-        return None
 
-    def _start_edge_resize(self, e, edge: str):
-        """开始边缘拉伸：记录 (全局点, 当前窗口几何)；拉伸中隐藏滚动条
-        （避免随窗口缩放出现/消失造成闪烁），松手恢复。
 
-        松手保证 = 下面的 `viewport().grabMouse()`（不是 QApplication 级事件
-        过滤器）：抓取后松手事件无论光标在哪都回到 viewport → 本视图
-        mouseReleaseEvent → _end_edge_resize；_end_edge_resize 自己会 releaseMouse。
-        （模块顶部 __init__ 里的说明记录了「为什么可以不要 app 级兜底」。）
-        """
-        self._resize_edge = edge
-        self._resize_geom = (e.globalPosition().toPoint(), self.geometry())
-        self._manual_resize = True
-        self._sb_prev = (self.horizontalScrollBarPolicy(),
-                         self.verticalScrollBarPolicy())
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        # 抓取 viewport（而非 view 本体）鼠标：保证松手事件一定回到本窗、
-        # 即便在窗口外/桌面上释放，_end_edge_resize 也能被触发，避免状态卡死。
-        self.viewport().grabMouse()
 
-    def _do_edge_resize(self, g):
-        """拖动中按边缘类型调整窗口几何。
-        - 等比例锁定（默认）：宽高比锁定图片比例（任意边/角拉伸都是等比缩放，
-          图片恒填满窗口，无透明区、不变形）。
-        - 解锁：窗口自由调整比例（水平/垂直独立），图片等比 contain 适配。"""
-        g0, geo = self._resize_geom
-        dx = g.x() - g0.x()
-        dy = g.y() - g0.y()
-        e = self._resize_edge
-        x, y = geo.x(), geo.y()
-        w, h = geo.width(), geo.height()
-        if self._ratio_lock:
-            ratio = (self._img_lw / self._img_lh) if self._img_lh > 0 else 1.0
-            if "l" in e:
-                w = max(80, geo.width() - dx)
-            elif "r" in e:
-                w = max(80, geo.width() + dx)
-            if "t" in e:
-                h = max(60, geo.height() - dy)
-            elif "b" in e:
-                h = max(60, geo.height() + dy)
-            if "l" in e or "r" in e:
-                h = max(60, int(round(w / ratio)))   # 水平主导
-            else:
-                w = max(80, int(round(h * ratio)))   # 垂直主导
-        else:
-            # 解锁：自由比例（独立调整宽高）
-            if "l" in e:
-                x = geo.x() + dx
-                w = geo.width() - dx
-            if "r" in e:
-                w = geo.width() + dx
-            if "t" in e:
-                y = geo.y() + dy
-                h = geo.height() - dy
-            if "b" in e:
-                h = geo.height() + dy
-            w = max(80, w)
-            h = max(60, h)
-        if "l" in e:
-            x = geo.right() - w
-        if "t" in e:
-            y = geo.bottom() - h
-        self.setGeometry(x, y, w, h)
-
-    def _end_edge_resize(self):
-        """边缘拉伸结束：恢复滚动条策略（拉伸中隐藏防闪烁）+ 附属浮层重排。
-        由 mouseReleaseEvent、滚动条事件过滤器、以及全局 MouseButtonRelease
-        捕获共用（松手在窗口外/状态栏上也一定结束，避免 _resize_edge 卡死）。"""
-        # 释放拉伸中可能抓取的 viewport 鼠标（保证不卡死）
-        vp = self.viewport()
-        if vp.mouseGrabber() is vp:
-            vp.releaseMouse()
-        if self._resize_edge is None:
-            return
-        self._resize_edge = None
-        self._resize_geom = None
-        self._manual_resize = False
-        if getattr(self, "_sb_prev", None):
-            self.setHorizontalScrollBarPolicy(self._sb_prev[0])
-            self.setVerticalScrollBarPolicy(self._sb_prev[1])
-            self._sb_prev = None
-        self._layout_close_btn()
-        self._fgroup.follow()
-        self._layout_navigator()
-        self._update_navigator()
 
     def eventFilter(self, obj, event):
         """事件过滤器（当前只装在**本窗口的两个滚动条对象**上，不再装到 QApplication）：
@@ -1765,167 +1121,19 @@ class ResultOverlay(QGraphicsView):
                     return False
         return super().eventFilter(obj, event)
 
-    def _sb_edge(self, sb, event) -> str | None:
-        """滚动条最外侧 _EDGE px 命中 = 对应窗口边/角；否则 None（滚动条照常）。
-        垂直滚动条在右 → 'r'（细分 'tr'/'br'）；水平滚动条在下 → 'b'（细分 'bl'/'br'）。"""
-        p = event.position()
-        x, y = p.x(), p.y()
-        ed = self._EDGE
-        if sb is self.verticalScrollBar():
-            if x < sb.width() - ed:       # 不在右边缘热区
-                return None
-            if y <= ed * 2:
-                return "tr"
-            if y >= sb.height() - ed * 2:
-                return "br"
-            return "r"
-        # 水平滚动条
-        if y < sb.height() - ed:          # 不在下边缘热区
-            return None
-        if x <= ed * 2:
-            return "bl"
-        if x >= sb.width() - ed * 2:
-            return "br"
-        return "b"
 
-    def _recontain(self):
-        """窗口被手动拉伸后重新适配：
-        - 等比例锁定：窗口 = 图片等比尺寸，图片填满窗口（zoom = 窗口宽/图片宽）；
-        - 解锁：**窗口大小与图片大小解耦**——图片保持当前显示尺寸不变，
-          窗口只是视口：图片大于窗口时滚动条自动出现（中键拖动/滚轮查看），
-          图片小于窗口时居中（AlignCenter）。
-        以图片逻辑尺寸为缩放基准，几何缩放连续。"""
-        lw, lh = self._img_lw, self._img_lh
-        if lw <= 0 or lh <= 0:
-            return
-        self._base_w = int(math.ceil(lw))
-        self._base_h = int(math.ceil(lh))
-        if self._ratio_lock:
-            self._zoom = max(0.01, self.width() / lw)
-        # 解锁：不动 zoom/img_zoom（图片尺寸固定，仅窗口为视口）
-        self._apply_transform()
 
-    def fit_to_screen(self):
-        """滚动截图长图：窗口等比缩放到**整图**在屏幕内可见。
-
-        普通贴图窗口尺寸=框选区域；长图比区域高得多，若不缩放只能看到
-        顶部一屏（视觉上"图片被限制在屏幕高度"）。此处把缩放基准改成
-        整图逻辑尺寸，等比放入可用屏幕（占 90%），窗口水平居中。
-        """
-        h, w = self.img.shape[:2]
-        lw, lh = w / self.dpr, h / self.dpr
-        # 用窗口所在屏（多显示器下按主屏算会把图缩到与所在屏不匹配的尺寸）
-        scr = screen_available_geometry(self)
-        zoom = min(1.0, scr.width() * 0.9 / lw, scr.height() * 0.9 / lh)
-        zoom = max(0.05, zoom)
-        nw = max(1, int(round(lw * zoom)))
-        nh = max(1, int(round(lh * zoom)))
-        x = scr.left() + max(4, (scr.width() - nw) // 2)
-        y = scr.top() + max(4, (scr.height() - nh) // 4)
-        self._base_w = int(math.ceil(lw))  # 基准 = 图片逻辑尺寸（几何缩放连续）
-        self._base_h = int(math.ceil(lh))
-        self._zoom = zoom
-        self._img_zoom = 1.0              # 整图适配后重置窗口内图片缩放
-        self.setGeometry(x, y, nw, nh)
-        self._apply_transform()
-        self._layout_close_btn()
-        self._fgroup.follow()
-        self._layout_navigator()
-        self._update_navigator()
 
     # ---- 导航图（缩略小地图）----
-    def _toggle_navigator(self):
-        """导航图开关（快捷键可配置，默认 M；标注模式跳过，避免误触）。"""
-        if self._anno_mode:
-            return
-        strip = self._status_strip
-        if strip is not None:
-            strip.btn_nav.setChecked(not strip.btn_nav.isChecked())
 
-    def _toggle_ratio_lock(self):
-        """等比例调节窗口开关（快捷键 E / 状态栏按钮）：翻转按钮即翻转状态。"""
-        strip = self._status_strip
-        if strip is not None:
-            strip.btn_ratio.setChecked(not strip.btn_ratio.isChecked())
 
-    def _set_ratio_lock(self, on: bool):
-        """状态栏等比例按钮状态 → 同步锁定状态；解锁/重新锁定时立即重新适配
-        图片（锁定=填满窗口；解锁=图片等比 contain 居中）。"""
-        self._ratio_lock = bool(on)
-        self._recontain()
-        self._set_status("等比例调节窗口：锁定（窗口与图片同比例）" if on
-                         else "等比例调节窗口：解锁（窗口可自由比例）")
 
-    def set_navigator(self, on: bool):
-        """状态栏导航图开关：开 = 显示缩略小地图（点击/拖动跳转大图）。"""
-        self._nav_on = bool(on)
-        if on:
-            self._ensure_navigator()
-            nav = self._navigator
-            nav.show()
-            nav.raise_()
-            self._layout_navigator()
-            self._update_navigator()
-        elif self._navigator is not None:
-            self._navigator.hide()
 
-    def _ensure_navigator(self):
-        if self._navigator is not None:
-            return
-        from ui.components.navigator import Navigator
-        nav = Navigator()
-        nav.set_image(self._pix)
-        nav.jumped.connect(self._on_nav_jump)
-        # 松手后还焦主窗口（Esc 等快捷键继续生效）
-        nav.interacted.connect(
-            lambda: (self.activateWindow(),
-                     self.setFocus(Qt.OtherFocusReason)))
-        self._navigator = nav
 
-    def _layout_navigator(self):
-        nav = self._navigator
-        if nav is None or not self._nav_on or self._pinned:
-            return
-        x = self.x() + self.width() - nav.width() - 8
-        y = self.y() + self.height() - nav.height() - 8
-        nav.move(max(0, x), max(0, y))
 
-    def _update_navigator(self):
-        nav = self._navigator
-        if nav is None or not self._nav_on:
-            return
-        view = self.mapToScene(self.viewport().rect()).boundingRect()
-        nav.set_view(view)
 
-    def _on_nav_jump(self, sx: float, sy: float):
-        """导航图点击/拖动：跳转主视图（场景点居中）。"""
-        vp = self.viewport()
-        t = self.transform()
-        self.horizontalScrollBar().setValue(
-            max(0, int(sx * t.m11() - vp.width() / 2)))
-        self.verticalScrollBar().setValue(
-            max(0, int(sy * t.m22() - vp.height() / 2)))
 
     # ---- M2：全选（Ctrl+A 固定）----
-    def select_all(self):
-        """选中当前贴图全部文字（仅蓝色高亮，不复制）。
-        表格模式下 = 选中全部网格单元格。"""
-        if self._table_mode and self._table_rows is not None:
-            self._tbl_sel = (0, 0, len(self._table_rows) - 1,
-                             len(self._table_cols) - 1)
-            self._draw_table_sel()
-            self._set_status(
-                f"已全选表格 {len(self._table_rows)} 行 × "
-                f"{len(self._table_cols)} 列 · Shift+C 复制 TSV")
-            return
-        n = len(self.box_order)
-        if n == 0:
-            return
-        self.ranges = [[i, 0, i, self.geom[self.box_order[i]]["n"]] for i in range(n)]
-        self.active = n - 1
-        self._redraw()
-        self._preview_selection(immediate=True)   # 全选 = 最终态
-        self._set_status(f"已全选 {n} 块 · Shift+C 复制 / Esc 关闭")
 
     def copy_all(self):
         """全选并复制全部文字进剪贴板（Shift+C / 可配置复制快捷键）。"""
@@ -2179,19 +1387,7 @@ class ResultOverlay(QGraphicsView):
         return super().nativeEvent(eventType, message)
 
     # ---- M2-7：标注模式 ----
-    def _toggle_annotation(self):
-        """Ctrl+Shift+D / 快捷键：切换标注模式（QShortcut 与 keyPressEvent 共用）。"""
-        if self._anno_mode:
-            self._exit_annotation()
-        else:
-            self._enter_annotation()
 
-    def _on_anno_btn_toggled(self, on: bool):
-        """「标注」按钮状态变化 → 同步标注模式（与文字框按钮同款状态显示）。"""
-        if on:
-            self._enter_annotation()
-        else:
-            self._exit_annotation()
 
     def showEvent(self, e):
         # 抢键盘焦点：确保 keyPressEvent（Ctrl+Shift+D / Ctrl+R / Ctrl+A 等）能收到
@@ -2277,70 +1473,13 @@ class ResultOverlay(QGraphicsView):
                 max(scr.top(), y))
         tb.raise_()
 
-    def _enter_annotation(self):
-        if self._anno_mode:
-            return
-        from ui.components.annotation import AnnotationSession
-        if self._anno is None:
-            self._anno = AnnotationSession(self, self.scene, self._pix)
-        self._anno_mode = True
-        # 统一工具栏标注态：同一行内联展开工具段（无独立标注工具栏顶层窗）
-        if self._toolbar is not None:
-            self._toolbar.set_anno_mode(True)
-            self._toolbar.btn_anno.setChecked(True)  # 标注按钮按下高亮
-            self._anno.set_num_start(self._toolbar.num_start)
-            self._anno.set_num_size(self._toolbar.num_size)
-            self._anno.set_num_style(self._toolbar.num_style)
-            self._anno.set_tool_style("rect", self._toolbar.rect_style)
-            self._anno.set_tool_style("arrow", self._toolbar.arrow_style)
-            self._anno.set_tool_style("line", self._toolbar.line_style)
-            self._anno.set_tool_style("pen", self._toolbar.pen_style)
-        self._fgroup.set_yield_enabled(True)   # 开启绘制让位（事件驱动，替代 80ms 轮询）
-        self._fgroup.raise_all()
-        self._sync_toolbar_pos()           # 工具段展开：工具栏变长重排
-        self._set_status("标注模式：拖拽绘制 · Ctrl+Z 撤销 · Esc 退出")
 
-    def _save_mosaic_mode(self, mode: str):
-        """马赛克模式：更新会话 + 按开关持久化（下次打开标注保持上次选择）。"""
-        if self._anno is not None:
-            self._anno.set_mosaic_mode(mode)
-        self._save_anno_param("mosaic_mode", mode)
 
-    def _on_anno_color(self, c: tuple):
-        """颜色变更：即时更新会话 + 按开关持久化。"""
-        if self._anno is not None:
-            self._anno.set_color(tuple(c))
-        self._save_anno_param("tool_color", ",".join(str(int(v)) for v in c))
 
-    def _on_anno_width(self, w: int):
-        """线宽变更：即时更新会话 + 按开关持久化。"""
-        if self._anno is not None:
-            self._anno.set_width(w)
-        self._save_anno_param("tool_width", str(w))
 
-    def _on_num_start(self, v: int):
-        """序号起始序号变更：更新会话起始值并重排已有序号 + 按开关持久化。"""
-        self._save_anno_param("num_start", str(int(v)))
-        if self._anno is not None:
-            self._anno.set_num_start(int(v), renumber=True)
 
-    def _on_num_size(self, v: int):
-        """序号圆圈尺寸变更：即时更新会话 + 按开关持久化。"""
-        self._save_anno_param("num_size", str(int(v)))
-        if self._anno is not None:
-            self._anno.set_num_size(v)
 
-    def _on_num_style(self, v: str):
-        """序号样式变更：即时更新会话（后续放置用新样式）+ 按开关持久化。"""
-        self._save_anno_param("num_style", str(v))
-        if self._anno is not None:
-            self._anno.set_num_style(v)
 
-    def _on_tool_style(self, tool: str, style: str):
-        """矩形/箭头/画笔样式变更：即时更新会话 + 按开关持久化。"""
-        self._save_anno_param(f"{tool}_style", str(style))
-        if self._anno is not None:
-            self._anno.set_tool_style(tool, style)
 
     # Q/W/E/R/T/Y/U/I/O → 标注工具**位置**（第 1~9 个，与工具名无关，顺序变化
     # 键位跟随；O 为预留位，工具不足 9 个时无效果，供以后插入的新工具使用）
@@ -2349,68 +1488,9 @@ class ResultOverlay(QGraphicsView):
                        "pen": "画笔", "line": "直线", "rect": "矩形",
                        "mosaic": "马赛克", "text": "文字"}
 
-    def _switch_tool_by_key(self, key) -> bool:
-        """按 QWERTYU 位置映射切换标注工具；命中返回 True。"""
-        from ui.components.annotation import TOOLS
-        try:
-            idx = [getattr(Qt, f"Key_{c.upper()}") for c in self._TOOL_KEYS] \
-                .index(key)
-        except ValueError:
-            return False
-        if idx >= len(TOOLS):
-            return False
-        tool = TOOLS[idx]
-        tb = self._toolbar
-        if tb is not None:
-            tb.select_tool(tool)          # 切工具 + 高亮按钮 + 弹子选项浮层
-        self._set_status(
-            f"标注工具：{self._TOOL_KEY_NAMES.get(tool, tool)} ("
-            f"{self._TOOL_KEYS[idx].upper()})")
-        return True
 
-    def handle_anno_key(self, e) -> bool:
-        """标注态通用键盘分发（贴图窗口 / 工具栏 / 子选项浮层共用）。
 
-        焦点可能落在工具栏按钮或子浮层上（独立顶层窗），Q/W/E/R/T/Y/U 与
-        Esc 都转发到这里统一处理；文字就地编辑时保护输入不拦截。
-        返回 True = 已处理。
-        """
-        if not self._anno_mode or self._anno is None:
-            return False
-        editing = self._anno._text_edit is not None
-        if e.key() == Qt.Key_Escape:
-            if editing:
-                self._anno.cancel_text_edit()
-            else:
-                self._on_esc()
-            return True
-        if e.modifiers() == Qt.NoModifier and not editing:
-            if self._switch_tool_by_key(e.key()):
-                return True
-        return False
 
-    def _save_anno_param(self, key: str, value: str):
-        """标注工具参数永久化记录（[ui] persist_params 开关控制）。"""
-        if not self.config.getbool("ui", "persist_params", True):
-            return
-        try:
-            self.config.cp.set("annotation", key, str(value))
-            self.config.save()
-        except OSError:
-            pass
-
-    def _exit_annotation(self):
-        if not self._anno_mode:
-            return
-        self._anno_mode = False
-        if getattr(self, "_fgroup", None) is not None:
-            self._fgroup.set_yield_enabled(False)   # 关闭让位并恢复未恢复的浮窗
-        if self._toolbar is not None:
-            self._toolbar.set_anno_mode(False)   # 收起工具段（含关闭子浮层）
-            self._toolbar.btn_anno.setChecked(False)  # 取消高亮
-        if self._anno is not None:
-            self.annotations_changed.emit(self._anno.json())
-        self._set_status("已退出标注模式")
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -2427,24 +1507,6 @@ class ResultOverlay(QGraphicsView):
         self._layout_navigator()
         self._update_navigator()
 
-    def _anno_undo(self):
-        if self._anno is not None:
-            self._anno.undo()
 
-    def _anno_redo(self):
-        if self._anno is not None:
-            self._anno.redo()
 
-    def _anno_clear(self):
-        if self._anno is not None:
-            self._anno.clear()
 
-    def load_annotations(self, json_text: str | None):
-        """恢复历史时载入标注（M2-7 持久化）。"""
-        from ui.components.annotation import AnnotationSession, anno_from_json
-        items = anno_from_json(json_text)
-        if not items:
-            return
-        if self._anno is None:
-            self._anno = AnnotationSession(self, self.scene, self._pix)
-        self._anno.load(items)

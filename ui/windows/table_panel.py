@@ -23,6 +23,7 @@ from core_engine.ai_pipeline import TableCell, TableResult
 from core_engine.table_export import TableExportService
 
 from ui.base.card_window import CardWindow
+from ui.base.texts import T
 from ui.base.theme_dialog import ThemeDialog
 from ui.base.widgets import screen_available_geometry
 
@@ -34,7 +35,7 @@ class _ResizeGrip(QWidget):
         super().__init__(parent)
         self.setFixedSize(18, 18)
         self.setCursor(Qt.SizeFDiagCursor)
-        self.setToolTip("拖动调整窗体大小")
+        self.setToolTip(T("ui.resize_grip_tip", "拖动调整窗体大小"))
         self._start = None
         self._start_geo = None
 
@@ -86,17 +87,19 @@ class TablePreviewPanel(CardWindow):
         self.card_lay.addWidget(self.table)
 
         # 提示
-        self.hint = QLabel(f"{table.row_count} 行 × {table.col_count} 列 · 双击单元格可编辑")
+        self.hint = QLabel(
+            T("table.shape_hint", "{row} 行 × {col} 列 · 双击单元格可编辑").format(
+                row=table.row_count, col=table.col_count))
         self.hint.setProperty("kind", "info")
         self.card_lay.addWidget(self.hint)
 
         # 按钮行
         btns = QHBoxLayout()
         btns.setSpacing(8)
-        self.btn_xlsx = QPushButton("导出 Excel")
-        self.btn_md = QPushButton("导出 Markdown")
-        self.btn_tsv = QPushButton("复制 TSV")
-        self.btn_close = QPushButton("关闭")
+        self.btn_xlsx = QPushButton(T("table.export_xlsx", "导出 Excel"))
+        self.btn_md = QPushButton(T("table.export_md", "导出 Markdown"))
+        self.btn_tsv = QPushButton(T("table.copy_tsv", "复制 TSV"))
+        self.btn_close = QPushButton(T("btn.close", "关闭"))
         for b in (self.btn_xlsx, self.btn_md, self.btn_tsv, self.btn_close):
             b.setMinimumHeight(36)
             btns.addWidget(b)

@@ -14,6 +14,8 @@ from PySide6.QtCore import Qt, QEvent, Signal, QTimer
 from PySide6.QtGui import QPainter, QColor, QFont
 from PySide6.QtWidgets import QLabel, QApplication
 
+from ui.base.texts import T
+
 
 class PinDot(QLabel):
     """圆形钉子 ⊛：无边框顶层小窗，交互信号全部转发宿主。"""
@@ -35,7 +37,8 @@ class PinDot(QLabel):
         self.setAlignment(Qt.AlignCenter)
         from ui.base.icon import icon_pixmap
         self.setPixmap(icon_pixmap("pin-dot", color="#ffd54f", size=20))
-        self.setToolTip("单击：取消钉图 · 双击：收起/恢复图片 · 拖动：移动")
+        self.setToolTip(
+            T("ui.pin_dot_tip", "单击：取消钉图 · 双击：收起/恢复图片 · 拖动：移动"))
         self.setStyleSheet(
             "QLabel { background: rgba(30,30,32,190); color: #ffd54f;"
             " border: 1px solid rgba(255,255,255,60); border-radius: 16px;"
@@ -122,7 +125,10 @@ class PinDot(QLabel):
         super().leaveEvent(e)
 
     def paintEvent(self, e):
-        # 圆底由 QSS 提供；这里补一道细描边提升可视性（自绘，双保险）
+        # 顺序要紧：QSS 的圆底由 super()（QPushButton）绘制，必须在它**之后**补描边。
+        # 原先先自绘椭圆、再调 super() —— 背景后画，把描边整圈盖掉，
+        # 注释宣称的「描边双保险」实际一点都看不见。
+        super().paintEvent(e)
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         pen = p.pen()
@@ -131,4 +137,3 @@ class PinDot(QLabel):
         p.setPen(pen)
         p.drawEllipse(1, 1, self.width() - 3, self.height() - 3)
         p.end()
-        super().paintEvent(e)

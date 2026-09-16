@@ -88,8 +88,8 @@ class SoftwareTabMixin:
 
         # 复制模式（本期仅存配置，行为不变）
         self.combo_selection = FitComboBox()
-        self.combo_selection.addItem(T("ui.copy_mode_auto", "auto_commit（选中即复制，现行为）"), "auto_commit")
-        self.combo_selection.addItem(T("ui.copy_mode_manual", "manual_copy（手动 Ctrl+C，本期仅预留）"), "manual_copy")
+        self.combo_selection.addItem(T("ui.copy_mode_auto", "auto_commit（选中即复制）"), "auto_commit")
+        self.combo_selection.addItem(T("ui.copy_mode_manual", "manual_copy（手动）"), "manual_copy")
         cur2 = self._cfg.get("software", "selection_mode", "auto_commit")
         i2 = self.combo_selection.findData(cur2)
         self.combo_selection.setCurrentIndex(i2 if i2 >= 0 else 0)
@@ -301,12 +301,12 @@ class SoftwareTabMixin:
             T("settings.open_history_hint",
               "在系统文件管理器中打开历史记录图片的保存目录。"))
         self.btn_clear_history = QPushButton(
-            T("settings.clear_all_hist", "清空全部历史"))
+            T("settings.clear_all_hist", "清空历史"))
         self.btn_clear_history.clicked.connect(self._clear_all_history)
         self._attach_hint(
             form, self.btn_clear_history,
             T("settings.clear_all_hist_hint",
-              "清空全部历史记录（收藏的图片会保留）；不可恢复，请谨慎操作。"))
+              "清空历史记录（收藏的图片会保留）；不可恢复，请谨慎操作。"))
         _hist_row = QHBoxLayout()
         _hist_row.setSpacing(8)
         _hist_row.addStretch(1)                 # 按钮组靠右，与底部保存/关闭区呼应
@@ -452,20 +452,20 @@ class SoftwareTabMixin:
                 None,
                 T("settings.title", "ClickOCR 设置"),
                 T("settings.clear_all_hist_confirm",
-                  "确定清空全部历史记录？\n（收藏的图片会保留，此操作不可恢复）")):
+                  "确定清空历史记录？\n（收藏的图片会保留，此操作不可恢复）")):
             return
         try:
             self._history.clear(keep_favorites=True)
         except Exception as e:      # noqa: BLE001
             log.exception("清空历史失败: %s", e)
-            self._notify(T("ui.msg_save_fail", "清空失败：{}").format(e))
+            self._notify(T("ui.msg_clear_fail", "清空失败：{}").format(e))
             return
         if self._on_clear_history is not None:
             try:
                 self._on_clear_history()
             except Exception:       # noqa: BLE001
                 log.exception("清空后刷新历史面板失败")
-        self._notify(T("ui.msg_cleared", "已清空全部历史（收藏保留）"))
+        self._notify(T("ui.msg_cleared", "已清空历史（收藏保留）"))
 
     def _on_save_fmt_changed(self):
         """质量滑块仅对有损格式（JPG/WebP/HEIC/AVIF）生效。"""

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QApplication
 from core_engine.logging_setup import get_logger
 from platform_compat import IS_WINDOWS
 from platform_compat.fonts import ui_font_family
+from ui.base.texts import T
 
 log = get_logger("scroll")
 
@@ -616,7 +617,7 @@ class ScrollBadge(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 8, 10, 8)
         root.setSpacing(6)
-        self.lbl = QLabel("滚动截图中…")
+        self.lbl = QLabel(T("strip.scroll_running", "滚动截图中…"))
         self.lbl.setStyleSheet(
             "QLabel { background: rgba(28,28,30,235); color: #8ab4ff;"
             " border: 1px solid rgba(138,180,255,120); border-radius: 8px;"
@@ -634,8 +635,10 @@ class ScrollBadge(QWidget):
 
     def set_progress(self, frames: int, height: int):
         self.lbl.setText(
-            f"滚动截图中… 已拼 {frames} 帧 / 高 {height}px · "
-            f"Enter = 完成 · Esc = 退出 · 点击停止")
+            T("strip.scroll_progress",
+              "滚动截图中… 已拼 {n} 帧 / 高 {h}px · "
+              "Enter = 完成 · Esc = 退出 · 点击停止").format(
+                  n=frames, h=height))
 
     def show_center_bottom(self):
         self.adjustSize()

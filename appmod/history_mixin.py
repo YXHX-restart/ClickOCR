@@ -30,6 +30,7 @@ from hotkey import HotkeyHost
 from platform_compat import capabilities, scroll_capture_supported
 from platform_compat.fonts import ui_font_family
 from ui.base.theme import apply_theme, resolve_theme, install_system_follow
+from ui.base.texts import T
 from ui.windows.selection import SelectionOverlay
 from ui.windows.result_overlay import ResultOverlay
 from appmod.workers import OcrWorker, TableWorker, EngineLoader
@@ -102,8 +103,9 @@ class HistoryMixin:
                 QTimer.singleShot(0, partial(self._ocr_history_overlay, ov, img))
         except Exception as e:  # noqa: BLE001
             log.exception("恢复历史记录失败: %s", e)
-            self.tray.showMessage("ClickOCR", f"恢复失败：{e}",
-                                  QSystemTrayIcon.Warning, 3000)
+            self.tray.showMessage(
+                "ClickOCR", T("hist.restore_fail", "恢复失败：") + str(e),
+                QSystemTrayIcon.Warning, 3000)
             # 图片缺失：弹窗之外，顺带删除这条（磁盘已无截图）的历史记录
             if "截图文件缺失" in str(e) and self.history is not None:
                 rid = rec.get("id")
@@ -399,8 +401,9 @@ class HistoryMixin:
             try:
                 img = self.svc.grab_region(ov.raw_bbox)
             except Exception as e:  # noqa: BLE001
-                self.tray.showMessage("ClickOCR", f"重新截图失败：{e}",
-                                      QSystemTrayIcon.Warning, 3000)
+                self.tray.showMessage(
+                    "ClickOCR", T("hist.regrab_fail", "重新截图失败：") + str(e),
+                    QSystemTrayIcon.Warning, 3000)
                 return
         rid = ov.history_id
         self._submit_ocr(ov, rid, img, "reocr")
@@ -493,6 +496,7 @@ class HistoryMixin:
                         svg_icon("star-filled" if fav else "star",
                                  color=accent_color(), size=18))
                     tb.btn_fav.setToolTip(
-                        "已收藏 · 点击取消收藏" if fav else "收藏当前截图")
+                        T("toolbar.fav_on", "已收藏 · 点击取消收藏") if fav
+                        else T("toolbar.fav", "收藏当前截图"))
 
 

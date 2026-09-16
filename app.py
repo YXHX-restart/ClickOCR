@@ -35,6 +35,7 @@ from hotkey import HotkeyHost
 from platform_compat import capabilities, scroll_capture_supported
 from platform_compat.fonts import ui_font_family
 from ui.base.theme import apply_theme, resolve_theme, install_system_follow
+from ui.base.texts import T
 from ui.windows.selection import SelectionOverlay
 from ui.windows.result_overlay import ResultOverlay
 
@@ -178,12 +179,16 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
         self.hotkey.set_callback(self.start_capture)
         self.hotkey.on_registered = None   # 注册成功不打扰（仅冲突/失败才提醒）
         self.hotkey.on_failed = lambda: self.tray.showMessage(
-            "ClickOCR", "全局热键注册失败（可能被占用），请用托盘\"截图\"按钮",
+            "ClickOCR",
+            T("app.hotkey_fail",
+              "全局热键注册失败（可能被占用），请用托盘\"截图\"按钮"),
             QSystemTrayIcon.Warning, 4000)
         # 主热键被占用、静默换成备用组合时告知用户实际生效的键
         # （print 对 GUI 用户不可见，否则以为还是自己设的键）
         self.hotkey.on_fallback = lambda label: self.tray.showMessage(
-            "ClickOCR", f"截图热键被占用，已改用 {label}",
+            "ClickOCR",
+            T("app.hotkey_fallback", "截图热键被占用，已改用 {label}").format(
+                label=label),
             QSystemTrayIcon.Warning, 4000)
 
         self._overlay = None
@@ -333,8 +338,10 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
 
     def open_history(self):
         if self.history is None:
-            self.tray.showMessage("ClickOCR", "历史记录不可用（数据库初始化失败）",
-                                  QSystemTrayIcon.Warning, 3000)
+            self.tray.showMessage(
+                "ClickOCR",
+                T("app.hist_unavailable", "历史记录不可用（数据库初始化失败）"),
+                QSystemTrayIcon.Warning, 3000)
             return
         # 单例：历史面板只应有一个窗口。已打开则聚焦现有窗口，避免重复创建。
         # （max_history_windows 只约束普通贴图窗口，与历史面板无关）
@@ -443,7 +450,8 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
         log.info("OCR 模型档位已切换: %s（tier=%s）", new_set, self.model_tier)
         try:
             self.tray.showMessage(
-                "ClickOCR", f"OCR 模型已切换：{new_set}",
+                "ClickOCR",
+                T("app.model_switched", "OCR 模型已切换：") + str(new_set),
                 QSystemTrayIcon.Information, 2500)
         except Exception:   # noqa: BLE001 托盘不可用不阻断
             pass
@@ -465,7 +473,8 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
         if self.is_second:
             print("[ClickOCR] 已在运行中：已聚焦已有窗口（若需要全新启动，请先右键托盘\"退出\"）。")
             self.tray.showMessage(
-                "ClickOCR", "已在运行中", QSystemTrayIcon.Information, 2000
+                "ClickOCR", T("app.already_running", "已在运行中"),
+                QSystemTrayIcon.Information, 2000
             )
             sys.exit(0)
             return

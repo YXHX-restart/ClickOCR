@@ -416,7 +416,7 @@ class SettingsPanel(SoftwareTabMixin, UiTabMixin, HotkeyTabMixin, CardWindow):
         # ---- 统一工具栏全局开关 ----
         self._set("ui", "toolbar_enabled",
                   "true" if self.chk_toolbar.isChecked() else "false")
-        msgs.append(T("ui.msg_toolbar", "统一工具栏：") + ("开" if self.chk_toolbar.isChecked() else "关"))
+        msgs.append(T("ui.msg_toolbar", "工具栏：") + ("开" if self.chk_toolbar.isChecked() else "关"))
 
         # ---- 纯信息状态栏全局开关 ----
         self._set("ui", "strip_enabled",

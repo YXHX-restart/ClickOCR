@@ -263,8 +263,21 @@ class HotkeyTabMixin:
         return w
 
     def _open_shortcut_panel(self):
-        """UI 入口：弹出快捷键速查面板（不占用全局快捷键），读实际配置键位。"""
+        """UI 入口：弹出快捷键速查面板（不占用全局快捷键），读实际配置键位。
+
+        面板是**独立顶层窗**（无父），每次点「操作一览」都新建一个并覆盖
+        `self._shortcut_panel`，旧实例失去 Python 引用后处于「还显示着但已经管不到」
+        的状态；同时读的是构造时的配置快照，也不能简单复用旧实例
+        （用户刚改完键位再打开会看到旧值）。故先显式关掉旧的再建新的。
+        """
         from ui.components.shortcut_panel import ShortcutPanel
+        old = getattr(self, "_shortcut_panel", None)
+        if old is not None:
+            try:
+                old.close()
+                old.deleteLater()
+            except Exception as e:       # noqa: BLE001 关不掉不该挡住新面板
+                log.warning("关闭旧的快捷键速查面板失败：%s", e)
         self._shortcut_panel = ShortcutPanel(cfg=self._cfg)
         self._shortcut_panel.show()
         self._shortcut_panel.raise_()

@@ -101,6 +101,10 @@ def _coords_table_grid(blobs):
     返回 `(rows, cols)` 条带（扩展到相邻组中点 ≈ 表格线位置）；非表格返回 None。
     blobs: [(orig, x0, y0, x1, y1, txt), ...]
     """
+    if not blobs:
+        # 函数自身的兜底：`median([])` 会抛 StatisticsError。原先只有生产调用方
+        # 加了空判断，函数本身仍会抛——测试直调、日后新增调用点都会踩。
+        return None
     from statistics import median
     h_med = median([t[4] - t[2] for t in blobs])
     w_med = median([t[3] - t[1] for t in blobs])

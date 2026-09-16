@@ -30,7 +30,7 @@ class _ResizeGrip(QWidget):
         self.setObjectName("resize_grip")
         self.setFixedSize(16, 16)
         self.setCursor(Qt.SizeHorCursor)
-        self.setToolTip("拖拽调整宽度")
+        self.setToolTip(T("strip.resize_tip", "拖拽调整宽度"))
         self.setAttribute(Qt.WA_StyledBackground)
         self._start = None        # (global_x, start_width)
 
@@ -125,7 +125,8 @@ class StatusStrip(CardWindow):
         self.btn_nav.setProperty("kind", "lock")
         self.btn_nav.setCheckable(True)
         self.btn_nav.setFixedSize(32, 32)
-        self.btn_nav.setToolTip("导航图：缩略小地图查看/跳转大图位置")
+        self.btn_nav.setToolTip(
+            T("strip.nav_tip", "导航图：缩略小地图查看/跳转大图位置"))
         self.btn_nav.toggled.connect(self.nav_toggled.emit)
         self.btn_nav.toggled.connect(self._sync_nav_icon)
         self._sync_nav_icon(False)
@@ -202,8 +203,10 @@ class StatusStrip(CardWindow):
         self.btn_lock.setIcon(
             svg_icon("link" if locked else "link-off", color=color, size=16))
         self.btn_lock.setToolTip(
-            "链锁跟随：锁定 = 随图片移动；解锁 = 独立拖动" if locked
-            else "链锁跟随：解锁 = 独立拖动；锁定 = 随图片移动")
+            T("strip.lock_on_tip",
+              "链锁跟随：锁定 = 随图片移动；解锁 = 独立拖动") if locked
+            else T("strip.lock_off_tip",
+                   "链锁跟随：解锁 = 独立拖动；锁定 = 随图片移动"))
 
     def _sync_nav_icon(self, on: bool):
         """导航图开关图标：开 = 主题强对比色；关 = 灰。"""
@@ -214,8 +217,8 @@ class StatusStrip(CardWindow):
             else ("#dddddd" if dark else "#888888")
         self.btn_nav.setIcon(svg_icon("nav", color=color, size=16))
         self.btn_nav.setToolTip(
-            "导航图已开：缩略小地图查看/跳转大图位置" if on
-            else "导航图已关")
+            T("strip.nav_on_tip", "导航图已开：缩略小地图查看/跳转大图位置")
+            if on else T("strip.nav_off_tip", "导航图已关"))
 
     def _sync_ratio_icon(self, on: bool):
         """等比例按钮图标：锁定 = ratio（强对比色）；解锁 = ratio-off（灰）。"""
@@ -227,8 +230,10 @@ class StatusStrip(CardWindow):
         self.btn_ratio.setIcon(
             svg_icon("ratio" if on else "ratio-off", color=color, size=16))
         self.btn_ratio.setToolTip(
-            "等比例调节窗口：锁定 = 窗口与图片同比例（默认）· 快捷键 E" if on
-            else "等比例调节窗口：解锁 = 窗口可自由调整比例 · 快捷键 E")
+            T("strip.ratio_on_tip",
+              "等比例调节窗口：锁定 = 窗口与图片同比例（默认）· 快捷键 E") if on
+            else T("strip.ratio_off_tip",
+                   "等比例调节窗口：解锁 = 窗口可自由调整比例 · 快捷键 E"))
 
     def set_status(self, text: str):
         self.status.setText(text)

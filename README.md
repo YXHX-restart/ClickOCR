@@ -54,14 +54,21 @@ pip install -r requirements.txt
 ## 测试
 
 ```bash
-.venv\Scripts\python -m pytest tests\ -q          # 冒烟：合成图 → RapidOcrEngine.recognize
-.venv\Scripts\python tests\test_engine.py
+.venv\Scripts\python -m unittest discover -s tests -t . -v   # 全套离线回归（推荐）
+.venv\Scripts\python tests\test_db_manager.py                # 单个模块
 ```
 
-> 注：`scripts/` 下为开发期验证脚本，非正式 pytest 套件，后续计划收编进 `tests/`。分三类：
-> - **断言守卫**（有断言、可直接重跑，改完代码先跑这批）：`_verify_review_fixes.py`、`_verify_special_fixes.py`、`_verify_theme_tokens.py`、`_test_theme_apply.py`、`_validate_search.py`、`_spec_probe.py`
-> - **UI 冒烟**（需真桌面 + 人眼判断）：`_test_*.py`、`_smoke_packaged.py`
-> - **基准**：`_bench_gpu.py`、`_bench_gpu_batch.py`、`_bench_ocr.py`（图片路径由命令行传入）
+`tests/` 是**离线**套件：不加载推理大模型、不依赖真实显示器（Qt 走 `offscreen`）、
+不写用户配置与历史库；需要模型/显示环境的用例自己 `skipUnless`，不会默默变红。
+`tests/test_guards.py` 还会把 `scripts/` 下 14 个断言型守卫当子进程跑一遍 ——
+**一条命令 = 全套回归**（CI 见 [.github/workflows/tests.yml](.github/workflows/tests.yml)）。
+
+> 注：`scripts/` 下还有一批需要**真桌面 + 人眼判断**或外部输入的脚本，断言不了
+> 「看起来对不对」，仍需手跑：`_test_pin_*.py`、`_test_restore*.py`、
+> `_test_popup_close.py`、`_test_qr_btn_visibility.py`、`_test_num_badge.py`、
+> `_test_select_tool.py`、`_test_text_tool.py`、`_test_anno_text_edit.py`、
+> `_test_table_lines.py <图片>`、`_smoke_packaged.py`、`_bench_*.py`、
+> `_spec_probe.py`（需先跑一次基线 `build/_spec_before.json`）。
 
 ## 打包
 

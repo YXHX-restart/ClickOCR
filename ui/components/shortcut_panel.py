@@ -42,7 +42,7 @@ def build_shortcut_rows(cfg=None) -> list:
         ("global", _fmt_combo(get("hotkey_global", "history", "ctrl+`")),
          T("shortcut.desc_history", "打开历史记录")),
         ("global", _fmt_combo(get("hotkey_global", "through", "alt+f")),
-         T("shortcut.desc_through", "切换贴图/钉图点击穿透")),
+         T("shortcut.desc_through", "切换贴图/钉图窗口点击穿透（鼠标落到桌面，再按取消）")),
     ]
     # ---- 截图选择（截图遮罩中）----
     rows += [
@@ -50,13 +50,14 @@ def build_shortcut_rows(cfg=None) -> list:
         ("select", _fmt_combo(get("hotkey_select", "full_sel", "a")),
          T("shortcut.desc_full_sel", "框选整个屏幕")),
         ("select", _fmt_combo(get("hotkey_select", "scroll_sel", "r")),
-         T("shortcut.desc_scroll_sel", "开启/退出滚动截图（截长图）")),
+         T("shortcut.desc_scroll_sel",
+           "开启/退出滚动截图（框选后：左键自动滚动 / 右键退出 / 滚轮手动）")),
         ("select", _fmt_combo(get("hotkey_select", "color_pick", "c")),
          T("shortcut.desc_pick_color", "复制光标处像素色值")),
         ("select", _fmt_combo(get("hotkey_select", "color_fmt", "h")),
          T("shortcut.desc_fmt_color", "切换色值显示格式")),
         ("select", "Shift（按住）", T("shortcut.desc_slow", "放慢鼠标精细框选")),
-        ("select", "Alt（按住）", T("shortcut.desc_ratio", "保持宽高比")),
+        ("select", "Alt（按住）", T("shortcut.desc_ratio", "等比例调节窗口（锁定/解锁）")),
         ("select", "Esc / 右键", T("shortcut.desc_cancel_sel", "取消截图")),
     ]
     # ---- 贴图窗口（截图结果 / 历史图窗口）----
@@ -129,7 +130,7 @@ class ShortcutPanel(CardWindow):
 
     def __init__(self, rows: list | None = None,
                  title: str | None = None, cfg=None):
-        super().__init__(title=title or T("shortcut.title", "快捷键速查"),
+        super().__init__(title=title or T("shortcut.title", "操作一览"),
                          with_close=False)
         self.setFixedWidth(560)
         rows = rows if rows is not None else build_shortcut_rows(cfg)

@@ -38,7 +38,7 @@ class _TableBtn(QPushButton):
     long_pressed = Signal()
     double_clicked = Signal()
 
-    def __init__(self, text: str = T("strip.btn_table", "表格")):
+    def __init__(self, text: str = T("strip.btn_table", "格")):
         super().__init__(text)
         self.setProperty("kind", "corner")
         self.setCheckable(True)
@@ -567,13 +567,13 @@ class ToolBar(CardWindow):
         self.btn_qr.toggled.connect(self.qr_toggled.emit)
         lay.addWidget(self.btn_qr)
 
-        self.btn_boxes = corner(T("strip.btn_boxes", "文字框"),
+        self.btn_boxes = corner(T("strip.btn_boxes", "文"),
                                 T("toolbar.boxes", "显示/隐藏识别文字蓝色框"), checkable=True)
         self.btn_boxes.setFixedHeight(24)          # 与工具格子同高
         self.btn_boxes.toggled.connect(self.boxes_toggled.emit)
         lay.addWidget(self.btn_boxes)
 
-        self.btn_table = _TableBtn(T("strip.btn_table", "表格"))
+        self.btn_table = _TableBtn(T("strip.btn_table", "格"))
         self.btn_table.setFixedHeight(24)          # 与工具格子同高
         self.btn_table.toggled.connect(self.table_mode_changed.emit)
         self.btn_table.long_pressed.connect(self.table_window_requested.emit)
@@ -581,8 +581,8 @@ class ToolBar(CardWindow):
         lay.addWidget(self.btn_table)
 
         # ---- 标注入口（常驻，展开/收起工具段）----
-        self.btn_anno = corner(T("strip.btn_anno", "标注"),
-                               T("toolbar.anno", "启动标注工具"), checkable=True)
+        self.btn_anno = corner(T("strip.btn_anno", "标"),
+                               T("toolbar.anno", "开始标注工具"), checkable=True)
         self.btn_anno.setFixedHeight(24)          # 与工具格子同高
         self.btn_anno.toggled.connect(self.anno_toggled.emit)
         lay.addWidget(self.btn_anno)
