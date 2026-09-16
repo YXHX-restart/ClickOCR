@@ -1,0 +1,112 @@
+# ===========================================================================
+# ClickOCR 界面配色 —— 唯一真值源
+#
+# 分工（只有第一层需要人写）：
+#   1. [themes.<名>]          语义槽。组件不直接写色值，一律引用槽名。
+#   2. [themes.<名>.derived]  派生槽：由语义槽算出（低 alpha 叠加等）。
+#                             写规则而不是写死值，可防止 hover/选中底
+#                             将来再次各自漂移。
+#   3. [themes.<名>.fragments] 非颜色的模板片段（两套主题极少数结构性差异）。
+#
+# 新增主题：复制一整段 [themes.xxx]（含 derived / fragments），改值即可。
+#           theme.py 与 QSS 模板都不用动。
+#
+# 全部色值均为「原设计已存在过的颜色」，没有发明新色。
+# ===========================================================================
+
+[meta]
+# 解析不出配置时的兜底主题
+default_theme = "dark"
+# [ui] theme = system 时，系统深色/浅色分别用哪个主题
+system_dark   = "dark"
+system_light  = "light"
+# 「跟随系统」在下拉框里的显示名（各主题自己的显示名见 [themes.<名>.meta]）
+system_label  = "跟随系统"
+
+
+# ===========================================================================
+# 暗色主题
+# ===========================================================================
+[themes.dark]
+# ---- 表面 ----
+bg            = "rgba(28,28,30,238)"   # 面板/卡片底
+inset         = "rgba(0,0,0,60)"       # 下沉面（表格底）
+surface       = "rgba(255,255,255,20)" # 抬升面（下拉列表/表头/缩略图/行）
+control       = "rgba(255,255,255,26)" # 控件底（输入框/复选框/按钮）
+control_hover = "rgba(255,255,255,45)" # 控件悬停底
+# ---- 描边 ----
+border        = "rgba(255,255,255,40)" # 默认描边（输入框/表格/缩略图/下拉列表）
+border_strong = "rgba(255,255,255,90)" # 强描边（复选框/微调框）
+divider       = "rgba(255,255,255,28)" # 分隔线/网格线
+# ---- 文字 ----
+text          = "#ffffff"              # 主文字
+text_muted    = "#cccccc"              # 次要文字
+text_faint    = "#777777"              # 占位/禁用文字
+# ---- 强调 / 状态 ----
+accent        = "#3d6de0"              # 强调实心（勾选框填充/选中行）
+accent_text   = "#8ab4ff"              # 强调文字（分组标题/标签下划线）
+danger        = "#ff9e9e"              # 危险
+warning       = "#ffd54f"              # 收藏星标 / 快捷键键帽
+warning_hover = "#ffe082"              # 收藏悬停（暗色下更亮）
+# ---- 其它 ----
+scrollbar     = "rgba(255,255,255,60)" # 滚动条手柄 / 滑块槽
+icon          = "#e4e4e4"              # 通用图标前景（SVG 图标描边）
+on_accent     = "#ffffff"              # 强调色填充之上的前景（勾选标记）
+
+[themes.dark.meta]
+label = "暗色"
+
+[themes.dark.derived]
+selected        = { from = "accent_text", alpha = 45 }      # 选中/勾选底
+accent_soft     = { from = "accent_text", alpha = 26 }      # 强调弱底（分组头）
+danger_soft     = { from = "danger",      alpha = 40 }      # 危险悬停底
+scrollbar_hover = { from = "scrollbar",   alpha_add = 40 }  # 滚动条手柄悬停
+
+[themes.dark.fragments]
+diff_shortcut_key_weight  = ""
+diff_qcheckbox_newline    = "\n    "
+diff_slider_handle_border = ""
+
+
+# ===========================================================================
+# 亮色主题
+# ===========================================================================
+[themes.light]
+# ---- 表面 ----
+bg            = "rgba(236,236,238,244)"
+inset         = "#f2f2f2"
+surface       = "rgba(0,0,0,16)"
+control       = "#f2f2f2"
+control_hover = "rgba(0,0,0,45)"
+# ---- 描边 ----
+border        = "rgba(0,0,0,120)"
+border_strong = "rgba(0,0,0,120)"
+divider       = "rgba(0,0,0,40)"
+# ---- 文字 ----
+text          = "#111111"
+text_muted    = "#888888"
+text_faint    = "#aaaaaa"
+# ---- 强调 / 状态 ----
+accent        = "#1a56db"
+accent_text   = "#1a56db"
+danger        = "#c0392b"
+warning       = "#b8860b"
+warning_hover = "#8a5a00"              # 收藏悬停（亮色下更深）
+# ---- 其它 ----
+scrollbar     = "rgba(0,0,0,60)"
+icon          = "#333333"
+on_accent     = "#ffffff"
+
+[themes.light.meta]
+label = "亮色"
+
+[themes.light.derived]
+selected        = { from = "accent_text", alpha = 35 }
+accent_soft     = { from = "accent_text", alpha = 26 }
+danger_soft     = { from = "danger",      alpha = 32 }
+scrollbar_hover = { from = "scrollbar",   alpha_add = 40 }
+
+[themes.light.fragments]
+diff_shortcut_key_weight  = "font-weight: bold; "
+diff_qcheckbox_newline    = " "
+diff_slider_handle_border = "\n    border: 1px solid rgba(0,0,0,90);"

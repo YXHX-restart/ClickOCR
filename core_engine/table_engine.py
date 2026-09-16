@@ -98,6 +98,7 @@ class TableEngine:
 
         # 1) 单元格文字：复用外部 OCR（v6-tiny），输出 (boxes, texts, scores) 元组列表
         ocr_results = None
+        boxes = []   # 预先绑定：_parse_cells 会用到；ocr_recognize 未注入时保持空
         if self._ocr_recognize is not None:
             boxes = self._ocr_recognize(image)
             if boxes:
@@ -114,7 +115,7 @@ class TableEngine:
 
         # 3) 解析 HTML 表格 → 行列网格
         rows, cols = self._grid_size(html)
-        cells = self._parse_cells(html, cell_boxes, boxes)
+        cells = self._parse_cells(html, cell_boxes)
 
         return TableResult(
             cells=cells,
@@ -142,8 +143,8 @@ class TableEngine:
             max_cols = max(max_cols, n)
         return max(rows, 1), max(max_cols, 1)
 
-    def _parse_cells(self, html: str, cell_boxes: np.ndarray,
-                     ocr_boxes: list) -> List[TableCell]:
+    def _parse_cells(self, html: str,
+                     cell_boxes: np.ndarray) -> List[TableCell]:
         """解析 HTML 为 TableCell 网格（含行列、跨行跨列、坐标、文字）。"""
         import re
         cells: List[TableCell] = []

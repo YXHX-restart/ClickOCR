@@ -58,7 +58,10 @@ pip install -r requirements.txt
 .venv\Scripts\python tests\test_engine.py
 ```
 
-> 注：`scripts/` 下 `_test_*.py` / `_diag_*.py` / `_bench_*.py` / `_smoke_packaged.py` 为开发期验证脚本（offscreen QTest），非正式 pytest 套件，后续计划收编进 `tests/`。
+> 注：`scripts/` 下为开发期验证脚本，非正式 pytest 套件，后续计划收编进 `tests/`。分三类：
+> - **断言守卫**（有断言、可直接重跑，改完代码先跑这批）：`_verify_review_fixes.py`、`_verify_special_fixes.py`、`_verify_theme_tokens.py`、`_test_theme_apply.py`、`_validate_search.py`、`_spec_probe.py`
+> - **UI 冒烟**（需真桌面 + 人眼判断）：`_test_*.py`、`_smoke_packaged.py`
+> - **基准**：`_bench_gpu.py`、`_bench_gpu_batch.py`、`_bench_ocr.py`（图片路径由命令行传入）
 
 ## 打包
 
@@ -110,15 +113,17 @@ ClickOCR/
 ├── ClickOCR.spec            # PyInstaller（CUDA 版）
 ├── ClickOCR_dml.spec        # PyInstaller（DirectML 通用版，推荐）
 ├── ClickOCR_cpu.spec        # PyInstaller（CPU 版，路线已弃用，保留备查）
+├── spec_common.py           # 三份 spec 共用的收集/瘦身/收尾逻辑
 ├── ocr/                     # 引擎抽象 + RapidOcrEngine
 ├── screenshot/              # mss 抓屏 + 滚动截图
 ├── ui/                      # 四层分包：base / components / core / windows
 ├── resources/
 │   ├── icons/               # SVG 图标（currentColor 单色规范）
 │   ├── models_v6/           # PP-OCRv6 ONNX bundle
-│   ├── config.ini           # 默认配置
+│   ├── config.ini           # 出厂配置模板（只读；首次运行复制到可写位置）
 │   └── ui_text.json         # UI 文字表（~103 条）
-├── scripts/                 # 临时验证脚本（_test_* / _diag_* / _bench_* / _smoke_packaged）
+├── config.ini               # 实际生效的用户配置（dev 在仓库根；打包在 exe 同目录）
+├── scripts/                 # 开发期验证脚本（断言守卫 / UI 冒烟 / 基准）
 ├── tests/                   # 冒烟测试
 └── docs/                    # 文档（详见下方索引）
 ```

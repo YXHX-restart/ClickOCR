@@ -19,6 +19,13 @@ logs/
 *.db.bak*
 screenshots/
 screenshots_*/
+# 运行期用户配置：dev 在仓库根、打包在 exe 同目录，首次运行由 resources/config.ini
+# （出厂模板，只读）复制生成。属「本机状态」不入库，否则个人/机器相关项会随克隆扩散
+config.ini
+
+# scripts/ 下脚本**自己生成**的图片（基准/诊断脚本的产物），属运行产物不入库；
+# 守卫基线（_p0_baseline_*.qss / _slot_snapshot.json）恰好相反，是冻结参照，必须入库
+scripts/_*.png
 
 # 项目状态数据（记忆/会话等，不入库）
 .workbuddy/

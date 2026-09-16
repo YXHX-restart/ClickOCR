@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+import html as _html
+import re as _re
 from typing import List, Optional
 
 from .ai_pipeline import TableResult
@@ -17,9 +19,21 @@ from .ai_pipeline import TableResult
 try:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, Side
+    # 列序号 → 列字母（1-based）一律走 openpyxl 自带实现，见 export_excel 内的说明
+    from openpyxl.utils import get_column_letter
     _OPENPYXL = True
 except Exception:  # pragma: no cover - 依赖缺失
     _OPENPYXL = False
+
+# 内联事件属性（onerror=/onload=/onclick=…）：模型预测的 HTML 与 OCR 单元格
+# 文本都是不可信输入，预览渲染前需过滤，防 <img onerror=…> 类 payload 执行
+_RE_ON_ATTR = _re.compile(
+    r"\son\w+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)", _re.IGNORECASE)
+
+
+def _sanitize_html(h: str) -> str:
+    """过滤 HTML 字符串中的内联事件属性（其余原样保留）。"""
+    return _RE_ON_ATTR.sub("", h)
 
 
 class TableExportService:
@@ -70,6 +84,11 @@ class TableExportService:
         for r, row in enumerate(grid, start=1):
             for c, val in enumerate(row, start=1):
                 cell = ws.cell(row=r, column=c, value=val or None)
+                # 公式注入防护：OCR 单元格文本是不可信输入，openpyxl 对以 =
+                # 开头的字符串按公式存储（=HYPERLINK/DDE 注入在打开时执行）；
+                # 强制 data_type='s' 按纯文本写，原字符完整保留
+                if val and str(val).startswith("="):
+                    cell.data_type = "s"
                 cell.border = border
                 cell.alignment = center
                 if r == 1:
@@ -81,10 +100,14 @@ class TableExportService:
                                end_row=r2 + 1, end_column=c2 + 1)
 
         # 列宽自适应（中文按 2 字符宽估算）
+        # 列字母换算统一用 openpyxl.utils.get_column_letter（**1-based**，故 +1）：
+        # 手写进位极易只覆盖一段——旧实现 chr(65+ci) / "A"+chr(65+ci-26) 只对
+        # 0~51 有效，ci≥52 会生成 "A[" 这类非法列名，>52 列的表格导出时设置列宽
+        # 直接抛 KeyError/ValueError。库自带实现覆盖任意列数，无需自己维护进位。
         if grid:
             for ci in range(len(grid[0])):
                 width = max((len(grid[ri][ci]) * 2 for ri in range(len(grid))), default=6)
-                ws.column_dimensions[chr(65 + ci) if ci < 26 else "A" + chr(65 + ci - 26)].width = min(max(width + 2, 8), 40)
+                ws.column_dimensions[get_column_letter(ci + 1)].width = min(max(width + 2, 8), 40)
 
         wb.save(file_path)
 
@@ -132,14 +155,18 @@ class TableExportService:
     @staticmethod
     def to_html(table: TableResult) -> str:
         if table.html:
-            return table.html
+            # 模型原始 HTML 含 OCR 文本（不可信输入）：过滤内联事件属性，
+            # 防 <img onerror=…> 类 payload 在预览渲染器中执行
+            return _sanitize_html(table.html)
         grid = TableExportService._grid(table)
         if not grid:
             return "<table></table>"
         parts = ["<table border='1' cellspacing='0' cellpadding='4'>"]
         for ri, row in enumerate(grid):
             tag = "th" if ri == 0 else "td"
-            parts.append("<tr>" + "".join(f"<{tag}>{v}</{tag}>" for v in row) + "</tr>")
+            # 单元格文本统一 HTML 转义（含 <>& 等，防注入/防破坏表格结构）
+            parts.append("<tr>" + "".join(
+                f"<{tag}>{_html.escape(v)}</{tag}>" for v in row) + "</tr>")
         parts.append("</table>")
         return "".join(parts)
 

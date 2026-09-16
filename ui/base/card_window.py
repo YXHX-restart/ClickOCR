@@ -13,7 +13,7 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QRect
 from PySide6.QtWidgets import (QWidget, QFrame, QVBoxLayout, QHBoxLayout,
                                QLabel, QPushButton, QApplication)
 
@@ -47,6 +47,16 @@ class DragBar(QWidget):
             # 此时 self.window() 返回的是自己而非宿主窗口。
             self._close.clicked.connect(lambda: self.window().close())
             lay.addWidget(self._close)
+            # 主题切换 → 刷新关闭按钮图标（弱引用订阅，随宿主销毁自动失效）
+            from ui.base.theme import on_theme_changed
+            on_theme_changed(self._refresh_close_icon)
+
+    def _refresh_close_icon(self, _theme=None):
+        """主题变更：按新主题色重建关闭按钮图标。"""
+        if self._close is not None:
+            from ui.base.icon import icon as svg_icon
+            from ui.base.theme import icon_color
+            self._close.setIcon(svg_icon("close", color=icon_color(), size=12))
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
@@ -93,10 +103,35 @@ class CardWindow(QWidget):
 
     def showEvent(self, _e):
         if not self._centered:
-            scr = QApplication.primaryScreen().availableGeometry()
+            # 首次居中到鼠标所在屏（多显示器下不要固定主屏）
+            scr = self._target_screen_geometry()
+            if scr.isNull():
+                scr = QApplication.primaryScreen().availableGeometry()
             self.move(scr.center().x() - self.width() // 2,
                       scr.center().y() - self.height() // 2)
             self._centered = True
+
+    def _target_screen_geometry(self):
+        """取鼠标所在屏的可用区域。
+
+        走 `screen_for_point`（**不会因为点落在屏间缝隙里就返回空**）。
+        原先返回空 QRect 会让 showEvent 退回主屏居中；而跨屏操作时鼠标终点
+        恰好会落进 Qt 逻辑空间的缝隙（主屏逻辑宽 2560、副屏逻辑原点 3840，中间
+        2560~3840 不属任何屏），于是窗口被硬拽到主屏中心——表现为
+        「跨屏截图后图片弹回主屏、尺寸不变」。返回空 QRect 只保留给
+        「真的一屏都没有」的极端情况。
+        """
+        try:
+            from ui.base.widgets import screen_for_point
+        except Exception:            # noqa: BLE001  控件层不可用时不阻断
+            screen_for_point = None
+        try:
+            from PySide6.QtGui import QCursor
+            scr = (screen_for_point(QCursor.pos()) if screen_for_point is not None
+                   else QApplication.screenAt(QCursor.pos()))
+            return scr.availableGeometry() if scr is not None else QRect()
+        except Exception:            # noqa: BLE001
+            return QRect()
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:

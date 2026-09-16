@@ -48,6 +48,9 @@ class SettingsPanel(SoftwareTabMixin, UiTabMixin, HotkeyTabMixin, CardWindow):
         super().__init__(title=T("settings.title", "ClickOCR 设置"), with_close=True)
         self.setMinimumWidth(400)
         self._cfg = config
+        # 保存流程里的配置旧值快照 {(sec,key): 旧值}：_set 记录、落盘失败时回滚
+        # （见 _save / _set），初始为空以免采集方法被单独调用时报 AttributeError
+        self._cfg_old: dict = {}
         self._hotkey = hotkey_host
         self._history = history_storage
         self._tray = tray            # 托盘（保存成功等用气泡通知）
@@ -156,178 +159,294 @@ class SettingsPanel(SoftwareTabMixin, UiTabMixin, HotkeyTabMixin, CardWindow):
                 inner.setToolTip(f"{cur}\n\n{text}" if cur else text)
 
 
-    def _save(self):
-        msgs = []
+    # ---- 保存：先落盘、后生效 ----
 
-        # ---- 主题（即时生效）----
-        theme = self.combo_theme.currentData()
-        self._cfg.cp.set("ui", "theme", theme)
-        app = QApplication.instance()
-        if app is not None:
-            apply_theme(app, resolve_theme(self._cfg))
-        msgs.append(f"主题：{theme}")
+    def _save(self):
+        """保存设置（唯一编排入口）：**先写配置并落盘成功，再执行运行时副作用**。
+
+        1) 采集：_save_software / _save_ui / _save_hotkey 只读控件 → 写内存配置，
+           各自返回 (消息列表, 待生效副作用)；此阶段不产生任何运行时变化；
+        2) 落盘：self._cfg.save()；失败 → 回滚内存配置 + 提示后直接返回，运行时
+           与磁盘保持一致（原顺序是「先做副作用、最后 save」：磁盘写失败——磁盘
+           满/目录只读——时运行时已经变了而配置没落盘，重启后静默丢失）；
+        3) 生效：依次执行待生效副作用（换主题、改历史上限/目录、写自启注册表、
+           热切换模型、注册热键），把它们产生的消息并入 msgs。
+        """
+        self._cfg_old = {}          # {(sec,key): 保存前的值}，落盘失败时整块回滚
+        msgs, pending = [], []
+        for collect in (self._save_software, self._save_ui, self._save_hotkey):
+            _msgs, _pending = collect()
+            msgs += _msgs
+            pending += _pending
+        try:
+            self._cfg.save()
+        except OSError as e:
+            self._rollback_cfg()
+            self._notify(T("ui.msg_save_fail", "保存失败：{}").format(e))
+            return
+        for effect in pending:
+            msgs += effect() or []
+
+        # 校验/执行类消息反馈：热键被占用、格式无效、自启失败等原本全部
+        # 被吞掉、用户一律只看到「已保存」——信任级缺陷。按关键字挑出问题项
+        # 弹窗提示（正常项仍走气泡，避免 30+ 条刷屏）。
+        problems = [m for m in msgs if any(
+            k in m for k in ("失败", "无效", "占用"))]
+        if problems:
+            try:
+                ThemeDialog.warning(
+                    self, T("settings.title", "ClickOCR 设置"),
+                    T("ui.msg_saved_with_issues",
+                      "已保存，但以下设置存在问题：\n\n{}").format(
+                          "\n".join(f"· {p}" for p in problems)))
+            except Exception:  # noqa: BLE001 弹窗失败退回气泡
+                self._notify(T("ui.msg_saved_with_issues_brief",
+                               "已保存（{} 项设置存在问题）").format(
+                                   len(problems)))
+        else:
+            # 保存结果用托盘气泡通知（窗口内不再显示状态文字）
+            self._notify(T("ui.msg_saved", "已保存"))
+
+    def _set(self, sec: str, key: str, value: str):
+        """保存流程内写内存配置的**唯一**入口；顺带记下旧值供落盘失败时回滚。
+
+        回滚为什么必要：不少配置是「读时生效」的（App.ocr_auto property、
+        resolve_theme、历史目录等），落盘失败后内存里若留着新值，运行时行为已经
+        变了而磁盘没变——重启即回到旧值（用户眼中的「静默丢失」）。
+        """
+        self._cfg_old.setdefault((sec, key),
+                                 self._cfg.cp.get(sec, key, fallback=""))
+        self._cfg.cp.set(sec, key, value)
+
+    def _rollback_cfg(self):
+        """落盘失败：把内存配置整块还原为本次保存前的值（与 _set 成对使用）。"""
+        for (sec, key), old in self._cfg_old.items():
+            self._cfg.cp.set(sec, key, old)
+        self._cfg_old.clear()
+
+    # ---- 采集各 Tab（只写配置，不产生运行时副作用）----
+
+    def _save_software(self) -> tuple:
+        """「软件设置」页：读控件 → 写内存配置，返回 (msgs, pending)。
+
+        pending 是必须等配置**落盘成功**才允许执行的副作用（改历史上限/目录、
+        写自启注册表、热切换模型），统一由 _save 在落盘后按序调用。
+        """
+        msgs, pending = [], []
 
         # ---- 历史保留条数（不设上限）----
         cap = self.spin_capacity.value()
-        self._cfg.cp.set("software", "history_max_count", str(cap))
-        if self._history is not None:
-            self._history.max_records = cap
+        self._set("software", "history_max_count", str(cap))
         msgs.append(f"历史保留条数：{cap}")
+
+        def _eff_cap():
+            if self._history is not None:
+                self._history.max_records = cap
+            return []
+        pending.append(_eff_cap)
 
         # ---- 历史图片位置（即时生效）----
         new_dir = self.edit_shot_dir.text().strip()
-        self._cfg.cp.set("software", "screenshots_dir", new_dir)
-        if self._history is not None:
+        self._set("software", "screenshots_dir", new_dir)
+        msgs.append(f"历史图片位置：{new_dir or '默认 screenshots/'}")
+
+        def _eff_dir():
+            if self._history is None:
+                return []
             target = Path(new_dir) if new_dir else \
                 (self._cfg.app_root / "screenshots")
             target = target if target.is_absolute() \
                 else (self._cfg.app_root / target)
             self._history.screenshots_dir = target
-        msgs.append(f"历史图片位置：{new_dir or '默认 screenshots/'}")
+            return []
+        pending.append(_eff_dir)
 
         # ---- 复制模式 ----
-        self._cfg.cp.set("software", "selection_mode",
-                         self.combo_selection.currentData())
+        self._set("software", "selection_mode",
+                  self.combo_selection.currentData())
         msgs.append(f"复制模式：{self.combo_selection.currentData()}")
 
         # ---- 图片保存格式 / 质量 / 文件名规则（即时生效）----
         fmt = self.combo_save_fmt.currentData()
-        self._cfg.cp.set("software", "save_format", fmt)
-        self._cfg.cp.set("software", "save_quality",
-                         str(self.slider_quality.value()))
+        self._set("software", "save_format", fmt)
+        self._set("software", "save_quality",
+                  str(self.slider_quality.value()))
         pattern = self.edit_name_pattern.text().strip()
-        self._cfg.cp.set("software", "name_pattern",
-                         pattern if pattern else "{datetime}_{ms}")
+        self._set("software", "name_pattern",
+                  pattern if pattern else "{datetime}_{ms}")
         msgs.append(f"保存格式：{fmt.upper()} · 质量："
                     f"{self.slider_quality.value()} · 文件名规则："
                     f"{pattern or '{datetime}_{ms}'}")
 
         # ---- OCR 引擎常驻 / 截图后自动 OCR ----
         keep = self.chk_ocr_keep_alive.isChecked()
-        self._cfg.cp.set("software", "ocr_keep_alive",
-                         "true" if keep else "false")
+        self._set("software", "ocr_keep_alive",
+                  "true" if keep else "false")
         msgs.append(T("ui.msg_ocr_keep", "OCR 常驻：") + ("开" if keep else "关"))
         auto = self.chk_ocr_auto.isChecked()
-        self._cfg.cp.set("software", "ocr_auto", "true" if auto else "false")
+        self._set("software", "ocr_auto", "true" if auto else "false")
         msgs.append(T("ui.msg_ocr_auto", "自动 OCR：") + ("开" if auto else "关"))
         drop = self.chk_drop_ocr.isChecked()
-        self._cfg.cp.set("software", "drop_ocr_auto", "true" if drop else "false")
+        self._set("software", "drop_ocr_auto", "true" if drop else "false")
         msgs.append(T("ui.msg_drop_ocr", "拖入自动 OCR：")
                     + ("开" if drop else "关"))
         # ---- 二维码识别（[software] enable_qr）----
         qr_on = self.chk_qr.isChecked()
-        self._cfg.cp.set("software", "enable_qr", "true" if qr_on else "false")
+        self._set("software", "enable_qr", "true" if qr_on else "false")
         msgs.append("二维码识别：" + ("开" if qr_on else "关"))
         # ---- 截图无操作也保存（[software] save_no_op_close）----
         noop = self.chk_save_no_op.isChecked()
-        self._cfg.cp.set("software", "save_no_op_close",
-                         "true" if noop else "false")
+        self._set("software", "save_no_op_close",
+                  "true" if noop else "false")
         msgs.append(T("ui.msg_save_no_op", "无操作保存：")
                     + ("开" if noop else "关"))
 
-        # ---- 开机自启动（M2-8）----
-        from core_engine.autostart import set_enabled as _set_auto
-        if _set_auto(self.chk_autostart.isChecked()):
-            msgs.append(T("ui.msg_autostart", "开机自启：") + ("开" if self.chk_autostart.isChecked() else "关"))
-        else:
-            msgs.append(T("ui.msg_autostart_fail", "开机自启设置失败"))
+        # ---- 开机自启动（M2-8：写注册表 = 运行时副作用，落盘后再执行）----
+        autostart = self.chk_autostart.isChecked()
+
+        def _eff_autostart():
+            from core_engine.autostart import set_enabled as _set_auto
+            if _set_auto(autostart):
+                return [T("ui.msg_autostart", "开机自启：")
+                        + ("开" if autostart else "关")]
+            return [T("ui.msg_autostart_fail", "开机自启设置失败")]
+        pending.append(_eff_autostart)
 
         # ---- 截图贴图最大数量 ----
-        self._cfg.cp.set("software", "max_history_windows",
-                         str(self.spin_max_shot.value()))
+        self._set("software", "max_history_windows",
+                  str(self.spin_max_shot.value()))
         msgs.append(f"截图贴图：{self.spin_max_shot.value()}")
         # ---- 历史贴图最大数量（从历史恢复的图）----
-        self._cfg.cp.set("software", "max_hist_windows",
-                         str(self.spin_max_hist.value()))
+        self._set("software", "max_hist_windows",
+                  str(self.spin_max_hist.value()))
         msgs.append(f"历史贴图：{self.spin_max_hist.value()}")
-
-        # ---- 历史面板：宽度 / 显示卡片数 ----
-        self._cfg.cp.set("ui", "history_panel_width",
-                         str(self.spin_hist_width.value()))
-        self._cfg.cp.set("ui", "history_visible_cards",
-                         str(self.spin_hist_cards.value()))
-        msgs.append(f"历史面板：{self.spin_hist_width.value()}px / "
-                    f"显示 {self.spin_hist_cards.value()} 张")
-
         # ---- 钉图数量上限 ----
-        self._cfg.cp.set("software", "max_pin_windows",
-                         str(self.spin_max_pin.value()))
+        self._set("software", "max_pin_windows",
+                  str(self.spin_max_pin.value()))
         msgs.append(f"钉图上限：{self.spin_max_pin.value()}")
 
         # ---- GPU 加速（[software] ocr_device，重启生效）----
         dev = self.combo_accel.currentData()
-        self._cfg.cp.set("software", "ocr_device", dev)
+        self._set("software", "ocr_device", dev)
         msgs.append(f"GPU 加速：{self.combo_accel.currentText()}")
 
         # ---- OCR 模型档位（[software] ocr_model，保存即热切换）----
         new_model = self.combo_model.currentData()
-        self._cfg.cp.set("software", "ocr_model", new_model)
+        self._set("software", "ocr_model", new_model)
         msgs.append(f"OCR 模型：{self.combo_model.currentText()}")
-        if new_model != self._model_set_old:
+
+        def _eff_model():
+            if new_model == self._model_set_old:
+                return []
             self._model_set_old = new_model   # 先更新旧值，避免重复触发
             if self._on_model_changed is not None:
                 try:
                     self._on_model_changed(new_model)
                 except Exception:       # noqa: BLE001 切换失败已在 App 内提示
                     log.exception("模型档位切换回调失败: %s", new_model)
+            return []
+        pending.append(_eff_model)
+
+        return msgs, pending
+
+    def _save_ui(self) -> tuple:
+        """「UI设置」页：读控件 → 写内存配置，返回 (msgs, pending)。
+
+        本页唯一的运行时副作用是换主题（apply_theme），同样延后到落盘之后。
+        """
+        msgs, pending = [], []
+
+        # ---- 主题（即时生效）----
+        theme = self.combo_theme.currentData()
+        self._set("ui", "theme", theme)
+        msgs.append(f"主题：{theme}")
+
+        def _eff_theme():
+            app = QApplication.instance()
+            if app is not None:
+                apply_theme(app, resolve_theme(self._cfg))
+            return []
+        pending.append(_eff_theme)
+
+        # ---- 历史面板：宽度 / 显示卡片数 ----
+        self._set("ui", "history_panel_width",
+                  str(self.spin_hist_width.value()))
+        self._set("ui", "history_visible_cards",
+                  str(self.spin_hist_cards.value()))
+        msgs.append(f"历史面板：{self.spin_hist_width.value()}px / "
+                    f"显示 {self.spin_hist_cards.value()} 张")
 
         # ---- 截图框选边框 ----
-        self._cfg.cp.set("ui", "border_color",
-                         ",".join(map(str, self.btn_sel_color.color)))
-        self._cfg.cp.set("ui", "border_width",
-                         str(self.spin_sel_width.value()))
+        self._set("ui", "border_color",
+                  ",".join(map(str, self.btn_sel_color.color)))
+        self._set("ui", "border_width",
+                  str(self.spin_sel_width.value()))
         msgs.append(f"框选边框：{self.btn_sel_color.color} "
                     f"{self.spin_sel_width.value()}px")
 
         # ---- 结果图片边框 ----
-        self._cfg.cp.set("ui", "overlay_border_color",
-                         ",".join(map(str, self.btn_overlay_color.color)))
-        self._cfg.cp.set("ui", "overlay_border_width",
-                         str(self.spin_overlay_width.value()))
+        self._set("ui", "overlay_border_color",
+                  ",".join(map(str, self.btn_overlay_color.color)))
+        self._set("ui", "overlay_border_width",
+                  str(self.spin_overlay_width.value()))
         msgs.append(f"窗口边框：{self.btn_overlay_color.color} "
                     f"{self.spin_overlay_width.value()}px")
 
         # ---- 二维码边框 / 表格边框颜色 ----
-        self._cfg.cp.set("ui", "qr_border_color",
-                         ",".join(map(str, self.btn_qr_color.color)))
+        self._set("ui", "qr_border_color",
+                  ",".join(map(str, self.btn_qr_color.color)))
         msgs.append(f"二维码边框：{self.btn_qr_color.color} ")
-        self._cfg.cp.set("ui", "table_border_color",
-                         ",".join(map(str, self.btn_table_color.color)))
+        self._set("ui", "table_border_color",
+                  ",".join(map(str, self.btn_table_color.color)))
         msgs.append(f"表格边框：{self.btn_table_color.color} ")
 
         # ---- 识别文字蓝色框默认显示 ----
-        self._cfg.cp.set("ui", "show_text_boxes",
-                         "true" if self.chk_text_boxes.isChecked() else "false")
+        self._set("ui", "show_text_boxes",
+                  "true" if self.chk_text_boxes.isChecked() else "false")
         msgs.append(T("ui.msg_text_boxes", "文字框：") + ("显示" if self.chk_text_boxes.isChecked() else "隐藏"))
 
         # ---- 截图取色器参数（像素框/倍率）----
-        self._cfg.cp.set("ui", "picker_size",
-                         str(self.spin_picker_size.value()))
-        self._cfg.cp.set("ui", "picker_zoom",
-                         str(self.spin_picker_zoom.value()))
+        self._set("ui", "picker_size",
+                  str(self.spin_picker_size.value()))
+        self._set("ui", "picker_zoom",
+                  str(self.spin_picker_zoom.value()))
         msgs.append(f"取色器：{self.spin_picker_size.value()}×"
                     f"{self.spin_picker_zoom.value()}")
 
         # ---- 统一工具栏全局开关 ----
-        self._cfg.cp.set("ui", "toolbar_enabled",
-                         "true" if self.chk_toolbar.isChecked() else "false")
+        self._set("ui", "toolbar_enabled",
+                  "true" if self.chk_toolbar.isChecked() else "false")
         msgs.append(T("ui.msg_toolbar", "统一工具栏：") + ("开" if self.chk_toolbar.isChecked() else "关"))
 
         # ---- 纯信息状态栏全局开关 ----
-        self._cfg.cp.set("ui", "strip_enabled",
-                         "true" if self.chk_strip.isChecked() else "false")
+        self._set("ui", "strip_enabled",
+                  "true" if self.chk_strip.isChecked() else "false")
         msgs.append(T("ui.msg_strip", "状态栏：") + ("开" if self.chk_strip.isChecked() else "关"))
 
         # ---- 标注栏默认开启 ----
-        self._cfg.cp.set("ui", "anno_toolbar_default",
-                         "true" if self.chk_anno_default.isChecked() else "false")
+        self._set("ui", "anno_toolbar_default",
+                  "true" if self.chk_anno_default.isChecked() else "false")
         msgs.append(T("ui.msg_anno_default", "标注栏默认：") + ("开" if self.chk_anno_default.isChecked() else "关"))
 
         # ---- 标注工具参数永久化记录 ----
-        self._cfg.cp.set("ui", "persist_params",
-                         "true" if self.chk_anno_persist.isChecked() else "false")
+        self._set("ui", "persist_params",
+                  "true" if self.chk_anno_persist.isChecked() else "false")
         msgs.append(T("ui.msg_anno_persist", "标注参数持久化：") +
                     ("开" if self.chk_anno_persist.isChecked() else "关"))
+
+        return msgs, pending
+
+    def _save_hotkey(self) -> tuple:
+        """「快捷键设置」页：写键位配置，返回 (msgs, pending)。
+
+        局部快捷键行（parser 行）只写配置，属采集阶段；全局热键行的 apply
+        （hotkey_tab.py 的 apply_shot / _secondary_apply）把「注册/注销 +
+        冲突检测 + 写 config」绑在一起、且只在注册成功时才写 config——本文件
+        无法拆开，故整行延后：落盘成功后再执行它（见 _apply_hotkeys）。
+        如需在别处复用，注意 apply 的返回值是消息列表。
+        """
+        msgs, pending = [], []
+        global_rows = []          # [(apply, combo)]：注册动作延后到落盘之后
 
         # ---- 所有快捷键行（统一控件，逐行读取 combo()）----
         # 全局热键行走 apply（冲突检测 + 注册/注销到 HotkeyHost + 写 config）；
@@ -337,32 +456,45 @@ class SettingsPanel(SoftwareTabMixin, UiTabMixin, HotkeyTabMixin, CardWindow):
                 self, "_hk_rows", []):
             combo = row.combo()
             if apply is not None:
-                msgs += apply(combo) or []
+                global_rows.append((apply, combo))
             elif parser is not None:
                 if combo not in ("off", "none", "false") \
                         and parser(combo) is None:
                     msgs.append(invalid or f"{_lbl} 快捷键格式无效")
                 else:
-                    self._cfg.cp.set(_sec, _key, combo)
+                    self._set(_sec, _key, combo)
                     msgs.append(f"{_lbl}：{combo}")
             else:
-                self._cfg.cp.set(_sec, _key, combo)
+                self._set(_sec, _key, combo)
                 msgs.append(f"{_lbl}：{combo}")
 
         # ---- 滚轮缩放修饰键 ----
-        self._cfg.cp.set("hotkey_overlay", "zoom_modifier",
-                         self.combo_zoom_mod.currentData())
+        self._set("hotkey_overlay", "zoom_modifier",
+                  self.combo_zoom_mod.currentData())
         msgs.append(f"滚轮缩放：{self.combo_zoom_mod.currentText()}")
-        self._cfg.cp.set("hotkey_overlay", "geom_zoom_modifier",
-                         self.combo_geom_zoom_mod.currentData())
+        self._set("hotkey_overlay", "geom_zoom_modifier",
+                  self.combo_geom_zoom_mod.currentData())
         msgs.append(f"窗口缩放：{self.combo_geom_zoom_mod.currentText()}")
 
-        try:
-            self._cfg.save()
-            # 保存结果用托盘气泡通知（窗口内不再显示状态文字）
-            self._notify(T("ui.msg_saved", "已保存"))
-        except OSError as e:
-            self._notify(T("ui.msg_save_fail", "保存失败：{}").format(e))
+        pending.append(lambda rows=global_rows: self._apply_hotkeys(rows))
+        return msgs, pending
+
+    def _apply_hotkeys(self, rows) -> list:
+        """落盘后执行全局热键的 apply（注册/注销），并让键位落盘。
+
+        apply 内部在注册成功时才会写 config，而那次写入发生在首次 save() 之后，
+        故这里执行完再补一次 save()：首次 save 已成功 ⇒ 磁盘可写，这次失败只
+        影响键位本身（并在消息里报出来），不会波及其余设置。
+        """
+        msgs = []
+        for apply_fn, combo in rows:
+            msgs += apply_fn(combo) or []
+        if rows:
+            try:
+                self._cfg.save()
+            except OSError as e:
+                msgs.append(T("ui.msg_save_fail", "保存失败：{}").format(e))
+        return msgs
 
 
 # 对外再导出（保持 `from ui.windows.settings_panel import KeyCaptureEdit` 等旧用法）

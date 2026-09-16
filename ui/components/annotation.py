@@ -29,8 +29,9 @@ from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QPushButton,
 
 from platform_compat.fonts import ui_font_family
 
-# 标注核心纯逻辑（命令撤销体系 + 序列化，无 Qt 依赖，见 ui/anno_core.py）
+# 标注核心纯逻辑（命令撤销体系 + 序列化 + 样式合法值唯一来源，无 Qt 依赖）
 from ui.core.anno_core import (ANNO_VERSION, UNDO_LIMIT, SERIALIZABLE_TYPES,
+                          MOSAIC_MODES, num_style_ids, tool_style_ids,
                           _Cmd, _AddCmd, _DeleteCmd, _MoveCmd, _EditCmd,
                           _ClearCmd, _RenumberCmd,
                           anno_to_json, anno_from_json)
@@ -52,7 +53,7 @@ from .anno.items import (
     TOOL_TIPS, render_annotated_image, _hex, _make_mosaic_pixmap
 )
 from .anno.popups import (
-    _WidthSliderPopup, _WidthButton, _ColorSizeRow, _AnnoPopupBase,
+    _ColorSizeRow, _AnnoPopupBase,
     _FontPopup, _MosaicModePopup, _StyleIconRow, _ToolOptionsPopup,
     _NumPopup
 )
@@ -85,7 +86,6 @@ class AnnotationSession:
         self._redo: list[_Cmd] = []
         self._drawing: dict | None = None
         self._draw_item = None
-        self._last_pt = None
         self._press_pt = None           # text 工具：按下起点（区分单击/拖动）
         self._text_drag_rect = None     # text 工具：拖动中的预览矩形
         self._text_edit = None          # 就地编辑中的文字项（text 工具）
@@ -125,7 +125,7 @@ class AnnotationSession:
         self.font_italic = bool(b)
 
     def set_mosaic_mode(self, mode: str):
-        self.mosaic_mode = mode if mode in ("pen", "rect", "textbox") else "rect"
+        self.mosaic_mode = mode if mode in MOSAIC_MODES else "rect"
 
     def set_num_start(self, v: int, renumber: bool = False):
         """设置序号起始序号；renumber=True 时同步重排已有序号标注。"""
@@ -137,22 +137,14 @@ class AnnotationSession:
         self.num_size = max(8, min(64, int(v)))
 
     def set_num_style(self, style: str):
-        if style in ("circle", "circle_o", "square", "paren", "plain"):
+        if style in num_style_ids():
             self.num_style = style
 
     def set_tool_style(self, tool: str, style: str):
-        """设置矩形/箭头/直线/画笔的样式（合法值见 _ToolOptionsPopup.TOOL_STYLES）。"""
+        """设置矩形/箭头/直线/画笔的样式（合法值唯一来源：anno_core.TOOL_STYLES）。"""
         if tool not in self.tool_styles:
             return
-        styles = ("rect", "filled", "round", "ellipse", "dialog",
-                  "highlight", "dash") if tool == "rect" else \
-                 ("single", "double", "dash", "elbow", "curve",
-                  "dot", "circle") if tool == "arrow" else \
-                 ("solid", "dash", "dot", "dashdot", "double",
-                  "wavy", "zigzag") if tool == "line" else \
-                 ("solid", "highlight", "dash", "dot", "double",
-                  "wavy", "glow")
-        if style in styles:
+        if style in tool_style_ids(tool):
             self.tool_styles[tool] = style
 
     def renumber(self, start: int):
@@ -182,8 +174,12 @@ class AnnotationSession:
         self.data = copy.deepcopy(items)
         # 重建撤销栈：按 items 顺序生成 AddCmd 序列（add0、add1…），
         # 使恢复历史后也能分步撤销（例如画 3 个框可逐框撤回，而非整体一步）。
-        self._undo = [_AddCmd(i, it) for i, it in enumerate(items)]
+        # 命令持有外部列表元素的独立副本：调用方复用/原地修改传入列表时，
+        # 撤销重做内容不被外部状态污染。
+        self._undo = [_AddCmd(i, copy.deepcopy(it)) for i, it in enumerate(items)]
         self._redo = []
+        self._selected_idx = None
+        self._clear_select_box()
         self._render_all()
 
     def json(self) -> str:
@@ -235,29 +231,44 @@ class AnnotationSession:
     def undo(self):
         if not self._undo:
             return
+        # 编辑态下撤销：data 布局即将变化，_editing_index/_hidden_edit_items
+        # 会失效（提交时越界或替换错块）→ 先取消编辑
+        if self._text_edit is not None:
+            self.cancel_text_edit()
         cmd = self._undo.pop()
         cmd.unapply(self.data)
         self._redo.append(cmd)
+        # 选中索引随数据变化失效：_render_all 只清选中框不清索引，残留的
+        # 旧索引会让 delete_selected 边界检查「通过」但删掉别的标注
+        self._selected_idx = None
+        self._clear_select_box()
         self._render_all()
 
     def redo(self):
         if not self._redo:
             return
+        if self._text_edit is not None:
+            self.cancel_text_edit()
         cmd = self._redo.pop()
         cmd.apply(self.data)
         self._undo.append(cmd)
+        self._selected_idx = None
+        self._clear_select_box()
         self._render_all()
 
     def clear(self):
         if not self.data:
             return
+        if self._text_edit is not None:
+            self.cancel_text_edit()
         self._push_cmd(_ClearCmd(self.data))
         self.data = []
+        self._selected_idx = None
+        self._clear_select_box()
         self._render_all()
 
     # ---- 鼠标绘制 ----
     def mouse_press(self, pt: QPointF):
-        self._last_pt = pt
         # 若仍在文字编辑态，先提交退出（点其它元素/切工具都应先退出当前编辑）。
         # 否则编辑态残留、旧项被隐藏，会导致后续命中错乱、选不中其它元素。
         if self._text_edit is not None:
@@ -341,7 +352,6 @@ class AnnotationSession:
             return
         if self._drawing is None:
             return
-        self._last_pt = pt
         if self.tool == "text":
             # 拖动：显示文本框虚线预览（单击不出现）
             r = QRectF(self._press_pt, pt).normalized()
@@ -362,6 +372,13 @@ class AnnotationSession:
         else:
             self._drawing["x1"] = pt.x()
             self._drawing["y1"] = pt.y()
+        # 马赛克·画笔：拖动预览只**增量追加新点**的块（组内 addToGroup）。
+        # 原实现每帧走 _make_item → 对全部已累积点重新 copy + 两次 scaled，
+        # 复杂度 O(点数²)：涂抹 200 点、鼠标 60Hz 时每秒上万次像素块操作，
+        # 越涂越卡。改为 O(点数) 后帧成本恒定。
+        if self._drawing.get("type") == "mosaic_pen":
+            self._append_mosaic_pen_point(pt)
+            return
         if self._draw_item is not None:
             self.scene.removeItem(self._draw_item)
             self._draw_item = None
@@ -390,6 +407,22 @@ class AnnotationSession:
             if self._draw_item is not None:
                 self._draw_item.setZValue(6)
                 self.scene.addItem(self._draw_item)
+
+    def _append_mosaic_pen_point(self, pt: QPointF):
+        """马赛克·画笔拖动预览：只把**新点**的马赛克块追加进预览组。
+
+        与 mouse_release 的最终图元（_MosaicPenElement）使用同一块尺寸与
+        定位公式，保证预览与落定结果一致；组由本方法按需创建。
+        """
+        if self._draw_item is None:
+            self._draw_item = QGraphicsItemGroup()
+            self._draw_item.setZValue(6)
+            self.scene.addItem(self._draw_item)
+        block = float(self._drawing.get("block", self.width) or self.width)
+        r = QRectF(pt.x() - block / 2.0, pt.y() - block / 2.0, block, block)
+        item = QGraphicsPixmapItem(_make_mosaic_pixmap(self.base, r, block))
+        item.setPos(r.topLeft())
+        self._draw_item.addToGroup(item)
 
     def mouse_release(self, _pt: QPointF):
         if self.tool == "select":
@@ -420,8 +453,15 @@ class AnnotationSession:
         if d["type"] in ("rect", "mosaic"):
             d["x0"], d["x1"] = sorted((d["x0"], d["x1"]))
             d["y0"], d["y1"] = sorted((d["y0"], d["y1"]))
-        # 过小过滤（矩形/箭头/直线/框选马赛克；pen/mosaic_pen 不过滤）
-        if d["type"] in ("rect", "arrow", "line", "mosaic"):
+        # 过小过滤（pen/mosaic_pen 不过滤）。按工具分两档，不能一律用 and 或 or：
+        # - 矩形/框选马赛克：**任一边**过小都是误拖（如 300×2 的细条），用 or
+        # - 线段/箭头：细长是合法的（水平线 dy≈0、垂直线 dx≈0），只有两端
+        #   几乎重合才算误触，必须用 and —— 改成 or 会让所有水平/垂直线失效
+        # 注意：dx/dy 只能在分类分支内取（pen/mosaic_pen 的 d 只有 points，无 x0/x1）
+        if d["type"] in ("rect", "mosaic"):
+            if abs(d["x1"] - d["x0"]) < 3 or abs(d["y1"] - d["y0"]) < 3:
+                return
+        elif d["type"] in ("line", "arrow"):
             if abs(d["x1"] - d["x0"]) < 3 and abs(d["y1"] - d["y0"]) < 3:
                 return
         self._push_cmd(_AddCmd(len(self.data), d))
@@ -694,8 +734,15 @@ class AnnotationSession:
         if self._editing_index is not None:
             idx = self._editing_index
             self._editing_index = None
-            self._push_cmd(_EditCmd(idx, self.data[idx], d))
-            self.data[idx] = d               # 原地替换：编辑已有文字块
+            # 防御复核：编辑期间 data 可能已被 undo/load 等路径改变，旧索引
+            # 可能越界或不再指向文字块 → 越界时降级为追加新块而非崩溃/错替
+            if 0 <= idx < len(self.data) \
+                    and self.data[idx].get("type") == "text":
+                self._push_cmd(_EditCmd(idx, self.data[idx], d))
+                self.data[idx] = d               # 原地替换：编辑已有文字块
+            else:
+                self._push_cmd(_AddCmd(len(self.data), d))
+                self.data.append(d)              # 索引失效：按新增处理
         else:
             self._push_cmd(_AddCmd(len(self.data), d))
             self.data.append(d)              # 新增文字块
@@ -730,7 +777,7 @@ __all__ = [
     '_LineElement', '_MosaicElement', '_MosaicPenElement',
     '_TextElement', '_NumElement', '_ItemFactory', 'TOOLS',
     'TOOL_LABELS', 'TOOL_TIPS', 'render_annotated_image', '_hex',
-    '_make_mosaic_pixmap', '_WidthSliderPopup', '_WidthButton',
+    '_make_mosaic_pixmap',
     '_ColorSizeRow', '_AnnoPopupBase', '_FontPopup', '_MosaicModePopup',
     '_StyleIconRow', '_ToolOptionsPopup', '_NumPopup',
     'AnnotationSession', 'ANNO_VERSION', 'UNDO_LIMIT',

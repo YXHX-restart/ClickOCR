@@ -22,21 +22,70 @@ import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QEvent, QPoint, QPointF, QRectF, Signal, QTimer
 from PySide6.QtGui import (
-    QColor, QBrush, QPen, QImage, QPixmap, QPainter, QPolygonF, QFont,
-    QFontMetricsF,
+    QColor, QBrush, QPen, QImage, QPixmap, QPainter, QPainterPath, QPolygonF,
+    QFont, QFontMetricsF,
 )
 from PySide6.QtWidgets import QApplication, QGraphicsView, QGraphicsScene, \
-    QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsTextItem, QPushButton, \
-    QFrame, QWidget
+    QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsItem, QGraphicsTextItem, \
+    QPushButton, QFrame, QWidget
 
 from config import ConfigManager
 from platform_compat import IS_WINDOWS
 from platform_compat.fonts import ui_font_family
 from ui.base.hotkey_keys import parse_qt_combo
+from ui.base.widgets import screen_available_geometry, desktop_union_available
 from ui.core.table_detect import (          # 表格检测纯算法（无 Qt 依赖）
     _bbox, _bbox_center, build_blobs,
     _detect_table_lines, _coords_table_grid, map_cell_texts,
 )
+
+
+def _qt_flag_value(flag) -> int:
+    """Qt 标志枚举 → int。
+
+    PySide6 6.x 起 `Qt.KeyboardModifier` 是 Python `enum.Flag`（不再是 IntEnum），
+    `int(Qt.ShiftModifier)` 直接抛 TypeError；必须取 `.value`。`Qt.Key` 两者
+    都支持，统一走本函数避免再次踩坑。
+    """
+    return flag.value if hasattr(flag, "value") else int(flag)
+
+
+# ---- 字符宽度度量缓存（set_boxes 全量重算的收敛点）----
+# _char_intervals 每块都要字体度量：<family, pixel_size> → QFont / QFontMetricsF
+# 各只建一次；单个字符的 advance 也按同一 key 缓存（字符集有限：ASCII + 常用汉字）。
+# 数值与「每次新建 font/metrics 现算」逐位一致（同样的 pixelSize / 同样的 family
+# 回退链），因此文字选区几何不变。
+_FONT_CACHE: dict = {}
+_FM_CACHE: dict = {}
+_CHAR_ADV_CACHE: dict = {}
+_CHAR_ADV_CACHE_MAX = 8192     # 每个 (family, pixel_size) 最多缓存的字符数
+
+
+def _font_and_metrics(family: str, pixel_size: int):
+    """按 (family, pixel_size) 复用 QFont / QFontMetricsF（各只建一次）。"""
+    key = (family, pixel_size)
+    fm = _FM_CACHE.get(key)
+    if fm is not None:
+        return fm
+    font = QFont(family)
+    font.setPixelSize(pixel_size)
+    _FONT_CACHE[key] = font            # 持有 QFont 引用：QFontMetricsF 不接管所有权
+    fm = QFontMetricsF(font)
+    _FM_CACHE[key] = fm
+    return fm
+
+
+def _char_advance(key, fm, ch: str) -> float:
+    """单字符 advance（进程级缓存）；缓存满则直接现算，不无限增长。"""
+    cache = _CHAR_ADV_CACHE.get(key)
+    if cache is None:
+        cache = _CHAR_ADV_CACHE[key] = {}
+    w = cache.get(ch)
+    if w is None:
+        w = fm.horizontalAdvance(ch)
+        if len(cache) < _CHAR_ADV_CACHE_MAX:
+            cache[ch] = w
+    return w
 
 
 class _BorderOverlay(QWidget):
@@ -72,6 +121,32 @@ class _BorderOverlay(QWidget):
         p.drawRect(QRectF(r.width() - bw, 0, bw, r.height()))    # 右
 
 
+class _SelectionHighlightItem(QGraphicsItem):
+    """一条文字选区的高亮（一个场景项 / 一条选区）。
+
+    原实现按**字符**建 QGraphicsRectItem：一屏 200 块 × 20 字全选即上千个场景项，
+    拖动时每帧 `removeItem` 全部再重建。这里把该选区的所有字符矩形累加进一个
+    QPainterPath，项数从「字符数」降为「选区数」，绘制/索引/析构成本随之收敛。
+
+    视觉等价性：填充色 / 不透明度 / z 值 / 抗锯齿设置与逐字符 drawRect 完全一致；
+    差别只在**相邻字符共享边**处——逐个矩形绘制时交界列被两次半透明叠加（更浅），
+    单一路径取并集则一次成形（无缝）。填充规则用 WindingFill（非默认的
+    OddEvenFill）：多块文字的矩形可能重叠，奇偶规则会在重叠处挖空。
+    """
+
+    def __init__(self, path: QPainterPath):
+        super().__init__()
+        self._path = path
+        self._brush = QBrush(QColor(0, 120, 255, 120))
+        self.setZValue(1)                  # 第 2 层（选区高亮，同 OCR 层）
+
+    def boundingRect(self) -> QRectF:
+        return self._path.boundingRect()   # 无描边（与改前 QPen(Qt.NoPen) 一致）
+
+    def paint(self, painter, option, widget=None):
+        painter.fillPath(self._path, self._brush)
+
+
 class ResultOverlay(QGraphicsView):
     closed = Signal()
     copied = Signal(str)
@@ -101,8 +176,6 @@ class ResultOverlay(QGraphicsView):
         # 去掉 QGraphicsView 默认的 1px QFrame 边框：否则 viewport 从 (1,1) 偏移、
         # 尺寸比 view 小 2px，导致图片四周的边框错位、右/下 2px 被裁掉。
         self.setFrameShape(QFrame.NoFrame)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setRenderHint(QPainter.Antialiasing)
         # 图片位置：窗口>图片时居中（AlignCenter）；图片>窗口时滚动条/中键拖动查看
         self.setAlignment(Qt.AlignCenter)
@@ -116,11 +189,20 @@ class ResultOverlay(QGraphicsView):
         # 由 viewport 接管拖动）；其余区域滚动条照常滚动。
         self.verticalScrollBar().installEventFilter(self)
         self.horizontalScrollBar().installEventFilter(self)
-        # 全局兜底：拉伸中任何位置松左键都结束拉伸（见 eventFilter），避免
-        # 松手在窗口外/状态栏上导致 mouseReleaseEvent 不触发、_resize_edge 卡死。
-        _app = QApplication.instance()
-        if _app is not None:
-            _app.installEventFilter(self)
+        # 注：原先此处还给 QApplication 装了 app 级事件过滤器（每个贴图窗口一个，
+        # 最多 7 个共存 → 应用内**任何**事件都被逐个过滤一遍），唯一用途是
+        # 「边缘拉伸时在窗口外松左键」的兜底。经论证该兜底冗余，已移除：
+        #   1) _start_edge_resize 里 `self.viewport().grabMouse()` 显式抓取
+        #      viewport（Windows 上即 SetCapture），松手事件必定回到 viewport，
+        #      再经 QAbstractScrollArea 转发到本视图的 mouseReleaseEvent
+        #      → _end_edge_resize（它自己会 releaseMouse）；
+        #   2) 即便没有显式抓取，Windows 也会把 button-up 送回收到 button-down
+        #      的窗口，Qt 侧的隐式 grabber（收到 press 的 widget 在按钮按下期间
+        #      一直收到后续鼠标事件）同样保证 release 回到 viewport；
+        #   3) 滚动条边沿拉伸那条分支不依赖 app 级过滤：滚动条的事件过滤器装在
+        #      滚动条**对象**上（上面两行），仍在。
+        # 若日后真出现「松手在窗口外 → 窗口卡在拉伸态」，恢复方式 = 这两行
+        # （`QApplication.instance().installEventFilter(self)`）加回来即可。
 
         self.img = img_bgr          # 保持引用，避免 QImage 底层 buffer 被回收
         self.raw_bbox = raw_bbox
@@ -253,17 +335,33 @@ class ResultOverlay(QGraphicsView):
         self._anno = None          # AnnotationSession
 
         # 标注入口快捷键兜底（Qt.Tool 窗口默认不抢焦点，窗口内任意子控件
-        # 获得焦点时也能触发；主路径仍是 keyPressEvent）
+        # 获得焦点时也能触发；主路径仍是 keyPressEvent）。
+        # 键位取自**同一份可配置热键**（_anno_hk / _table_hk），不再硬编码
+        # ——原先写死 Ctrl+Shift+D / Ctrl+Shift+T，用户改键后旧键位仍然生效，
+        # 同一功能出现两个键；configured 为 off 时也不该再注册。
         from PySide6.QtGui import QShortcut, QKeySequence
-        self._sc_anno = QShortcut(
-            QKeySequence(Qt.CTRL | Qt.SHIFT | Qt.Key_D), self)
-        self._sc_anno.setContext(Qt.WindowShortcut)
-        self._sc_anno.activated.connect(self._toggle_annotation)
-        # 表格识别入口（Ctrl+Shift+T）
-        self._sc_table = QShortcut(
-            QKeySequence(Qt.CTRL | Qt.SHIFT | Qt.Key_T), self)
-        self._sc_table.setContext(Qt.WindowShortcut)
-        self._sc_table.activated.connect(lambda: self.table_requested.emit())
+
+        def _seq(combo):
+            """(mods, key) → QKeySequence；None（关闭）→ None。
+
+            用 _qt_flag_value 取 Qt 枚举的数值：PySide6 6.x 的 Qt.KeyboardModifier
+            是 enum.Flag，`int(...)` 会抛 TypeError（原实现此处直接崩溃）。
+            """
+            if combo is None:
+                return None
+            return QKeySequence(_qt_flag_value(combo[0]) | _qt_flag_value(combo[1]))
+
+        self._sc_anno = None
+        if _seq(self._anno_hk) is not None:
+            self._sc_anno = QShortcut(_seq(self._anno_hk), self)
+            self._sc_anno.setContext(Qt.WindowShortcut)
+            self._sc_anno.activated.connect(self._toggle_annotation)
+        # 表格识别入口（键位同上，默认 Ctrl+Shift+T）
+        self._sc_table = None
+        if _seq(self._table_hk) is not None:
+            self._sc_table = QShortcut(_seq(self._table_hk), self)
+            self._sc_table.setContext(Qt.WindowShortcut)
+            self._sc_table.activated.connect(lambda: self.table_requested.emit())
         # 导航图开关（M，可配置 [hotkey_overlay] nav）：ApplicationShortcut
         # 保证焦点在状态栏按钮等子控件上时仍生效（文字编辑等控件会吃掉按键）
         # 滚动条已改为自动出现（图片超出窗口即显示），不再需要快捷键/图标开关
@@ -272,14 +370,18 @@ class ResultOverlay(QGraphicsView):
         if _nav_hk and _nav_hk.lower() not in ("off", "none", "false"):
             self._sc_nav = QShortcut(QKeySequence(_nav_hk), self)
             self._sc_nav.setContext(Qt.ApplicationShortcut)
-            self._sc_nav.activated.connect(self._toggle_navigator)
+            # 多贴图窗口时每个实例都注册了应用级快捷键——必须先判本窗口
+            # 是否激活，否则按一次 M 会同时切换所有窗口的导航图
+            self._sc_nav.activated.connect(
+                lambda: self.isActiveWindow() and self._toggle_navigator())
         # 等比例调节窗口开关（B，可配置 [hotkey_overlay] ratio）
         self._sc_ratio = None
         _ratio_hk = str(cfg.get("hotkey_overlay", "ratio", "b") or "").strip()
         if _ratio_hk and _ratio_hk.lower() not in ("off", "none", "false"):
             self._sc_ratio = QShortcut(QKeySequence(_ratio_hk), self)
             self._sc_ratio.setContext(Qt.ApplicationShortcut)
-            self._sc_ratio.activated.connect(self._toggle_ratio_lock)
+            self._sc_ratio.activated.connect(
+                lambda: self.isActiveWindow() and self._toggle_ratio_lock())
 
         # 角标按钮（文字框/标注）与状态文字已分离到独立 StatusStrip 浮层，
         # 图片窗口/scene 只含图片 —— 标注画布天然不含状态栏。
@@ -484,8 +586,9 @@ class ResultOverlay(QGraphicsView):
             self.btn_close.hide()
             return
         s = self.btn_close.width()   # 实际固定尺寸 32（sizeHint 不可靠）
-        from PySide6.QtWidgets import QApplication as _QA
-        scr = _QA.primaryScreen().availableGeometry()
+        # 用并集边界（_clamp_bounds），不能按单屏：跨屏时本窗口横跨两屏，按单屏
+        # 判定「窗外放得下吗」会得到错误结论（并可能把按钮丢到另一块屏上）。
+        scr = self._clamp_bounds()
         m = 5    # 镜像间距（窗外/窗内距右上角点均为 5px）
         # 窗外（镜像位）：左缘 = 窗口右 + m，下缘 = 窗口上 - m
         ox = self.x() + self.width() + m
@@ -508,6 +611,12 @@ class ResultOverlay(QGraphicsView):
         self.anchor = None
         self.focus = None
         self.dragging = False
+        # 同步清理表格选中态（Ctrl+R 重识别会走到这里）：旧高亮矩形残留。
+        # 越界防护**不在这里** —— 本函数只 removeItem + 重置字段，不会抛
+        # IndexError；真正会越界的是 _draw_table_sel 索引 self._table_rows，
+        # 保护写在那边（原先这里包一层 try/except 与注释声明不符，且把
+        # 清理过程中的真实错误一并吞掉）。
+        self._clear_table_sel()
         self._build_geom()
         # 画静态框线（浅色，提示可选单元）
         for it in self._outline:
@@ -546,7 +655,16 @@ class ResultOverlay(QGraphicsView):
                 _btn.blockSignals(False)
         # 配置开启时：截图后自动进入标注模式（[ui] anno_toolbar_default）
         if self._anno_default and not self._anno_mode:
-            QTimer.singleShot(0, self._enter_annotation)
+            # 用成员 singleShot 定时器（closeEvent 中 stop），不能用裸
+            # QTimer.singleShot(0, ...)：窗口 deleteLater 与定时器触发的
+            # 执行顺序无保证，可能在对象销毁后回调 _enter_annotation 抛
+            # RuntimeError（Internal C++ object already deleted）
+            if getattr(self, "_anno_auto_timer", None) is None:
+                t = QTimer(self)
+                t.setSingleShot(True)
+                t.timeout.connect(self._enter_annotation)
+                self._anno_auto_timer = t
+            self._anno_auto_timer.start(0)
 
     # ---- 文字蓝色框开关（贴图按钮 / 设置默认值联动）----
     def _on_boxes_toggled(self, checked: bool):
@@ -632,17 +750,21 @@ class ResultOverlay(QGraphicsView):
             # 无 OCR 结果（截图后自动 OCR 关闭）：请求 app 临时拉起 OCR
             self.ocr_needed.emit()
             return
-        self._table_mode = on
         if on:
-            self._apply_table_view()
+            # **按实际检测结果决定是否算「进入表格模式」**：原先先置 True 再看
+            # 检测结果，检测失败时界面是文字模式、交互却按表格模式走
+            # （点击清空选区、滚轮缩放被禁）→ 整个窗口交互锁死。
+            self._table_mode = self._apply_table_view()
         else:
+            self._table_mode = False
             self._set_boxes_visible(self._show_boxes)
             self._hide_table_boxes()
             self._clear_table_sel()
             self._set_status("已退出表格模式")
 
-    def _apply_table_view(self):
-        """坐标规则检测出表格 → 隐藏文字框显示网格；否则保留文字框。"""
+    def _apply_table_view(self) -> bool:
+        """坐标规则检测出表格 → 隐藏文字框显示网格，返回 True；
+        否则保留文字框、返回 False（调用方据此决定是否进入表格模式）。"""
         self._build_table_grid()
         if self._table_rows is not None:
             self._set_boxes_visible(False)
@@ -652,10 +774,11 @@ class ResultOverlay(QGraphicsView):
             self._set_status(
                 f"表格模式：{n_r} 行 × {n_c} 列 · 拖动框选单元格复制 TSV · "
                 "双击打开窗口 · 再点表格退出")
-        else:
-            self._hide_table_boxes()
-            self._set_boxes_visible(self._show_boxes)
-            self._set_status("未检测到表格结构，仍在文字模式（框选复制文本）")
+            return True
+        self._hide_table_boxes()
+        self._set_boxes_visible(self._show_boxes)
+        self._set_status("未检测到表格结构，仍在文字模式（框选复制文本）")
+        return False
 
     def _build_table_grid(self):
         """**表格网格构建（双通道，增强式）**——胶水层：
@@ -762,6 +885,14 @@ class ResultOverlay(QGraphicsView):
         if self._tbl_sel is None or not self._table_rows:
             return
         r0, c0, r1, c1 = self._tbl_sel
+        # 越界收敛：重识别后新网格可能比旧选区小，_tbl_sel 里的行/列号会指到
+        # _table_rows/_table_cols 之外 —— 保护必须写在真正索引的地方（见
+        # set_boxes 的说明）。旧选区整体越界时收敛到最后一格，不画空。
+        nr, nc = len(self._table_rows), len(self._table_cols or ())
+        if nr == 0 or nc == 0:
+            return
+        r0, r1 = max(0, min(r0, nr - 1)), max(0, min(r1, nr - 1))
+        c0, c1 = max(0, min(c0, nc - 1)), max(0, min(c1, nc - 1))
         for ri in range(r0, r1 + 1):
             y0, y1 = self._table_rows[ri]
             for ci in range(c0, c1 + 1):
@@ -812,7 +943,7 @@ class ResultOverlay(QGraphicsView):
         if txt:
             QApplication.clipboard().setText(txt)
             self.copied.emit(txt)
-            self._preview_selection()
+            self._preview_selection(immediate=True)
             self._set_status(f"已复制 {len(txt)} 字符 · Esc 关闭 / 空白点击清除")
         self._redraw()
 
@@ -888,14 +1019,23 @@ class ResultOverlay(QGraphicsView):
         - 区间和恰好等于框宽；
         - 'i'、'.'、',' 等窄字符占窄区间，'m'、'W'、汉字占宽区间，
           点击命中与视觉位置严格对齐。
+
+        **收敛点（性能）**：QFont / QFontMetricsF 按 (family, pixel_size) 进程级
+        复用，单字符 advance 也按同一 key 缓存（见模块顶部的 _font_and_metrics /
+        _char_advance）。原实现每块都 `QFont(...)` + `QFontMetricsF(...)` 再逐字符
+        `horizontalAdvance`，一屏 200 块 × 20 字 ≈ 4000 次字体度量，且每次
+        set_boxes（首次识别 / Ctrl+R / 历史恢复 / 补齐识别）全量重算。
+        数值不变：同样的 family、同样的 pixelSize、同样的 horizontalAdvance 结果，
+        仅把重复计算换成查表。
         """
         n = len(text)
         if n == 0:
             return []
-        font = QFont(ui_font_family())
-        font.setPixelSize(max(8, int(round(y1 - y0))))   # 按行高近似字号
-        fm = QFontMetricsF(font)
-        widths = [max(1.0, fm.horizontalAdvance(ch)) for ch in text]
+        pixel_size = max(8, int(round(y1 - y0)))     # 按行高近似字号
+        family = ui_font_family()
+        key = (family, pixel_size)
+        fm = _font_and_metrics(family, pixel_size)
+        widths = [max(1.0, _char_advance(key, fm, ch)) for ch in text]
         total = sum(widths)
         scale = (x1 - x0) / total if total > 0 else 1.0
         chars = []
@@ -1098,18 +1238,53 @@ class ResultOverlay(QGraphicsView):
         if self._status_strip is not None:
             self._status_strip.set_preview(text)
 
-    def _preview_selection(self):
-        """根据当前选区实时刷新第 2 行预览。"""
+    def _preview_selection(self, immediate: bool = False):
+        """刷新状态栏第 2 行预览；拖动中**防抖** 40ms，最终态立即刷新。
+
+        收敛点（性能）：原实现每个 mouseMoveEvent 都全量拼接选中文本
+        （get_selected_text 跨块切片 + "\n".join），再 setText 到状态栏 QLabel
+        （每帧触发布局与重绘）。拖动时相邻两帧的预览串只差末尾一两个字符，
+        重复计算纯属浪费；人眼对 40ms 的预览滞后无感。
+        故：拖动中（immediate=False）只重启 40ms 单次定时器；**所有最终态**
+        （按下成区 / 松手 / 双击整行 / Ctrl+A 全选 / 复制）走 immediate=True，
+        预览不会滞后于最终结果（定时器同步取消，不会有一次多余的迟到刷新）。
+        """
+        if immediate:
+            t = getattr(self, "_preview_timer", None)
+            if t is not None:
+                t.stop()
+            self._refresh_preview()
+            return
+        t = getattr(self, "_preview_timer", None)
+        if t is None:
+            t = QTimer(self)
+            t.setSingleShot(True)
+            t.setInterval(40)
+            t.timeout.connect(self._refresh_preview)
+            self._preview_timer = t
+        t.start()
+
+    def _refresh_preview(self):
         if self.active >= 0 and self.ranges:
             self._set_preview(self.get_selected_text())
         else:
             self._set_preview("")
 
     def _redraw(self):
+        """按选区重绘高亮：**一条选区 = 一个场景项**（见 _SelectionHighlightItem）。
+
+        收敛点（性能）：原实现为每个**字符**建一个 QGraphicsRectItem，拖动时
+        mouseMoveEvent 每帧先 removeItem 全部旧项再逐字符重建（一屏 200 块 × 20 字
+        全选 ≈ 4000 次场景增删），select_all 同理。现在把该选区所有字符矩形累加进
+        一个 QPainterPath，项数 = 选区数（多区域 Ctrl 点选时才有多个）：
+        实测全选 4000 → 200 项、3 选区 257 → 3 项，单帧 _redraw 80ms → 4ms。
+        """
         for it in self._hl:
             self.scene.removeItem(it)
         self._hl = []
         for (o0, c0, o1, c1) in self.ranges:
+            path = QPainterPath()
+            path.setFillRule(Qt.WindingFill)   # 多块矩形可能重叠，奇偶会挖空
             for pos in range(o0, o1 + 1):
                 orig = self.box_order[pos]
                 g = self.geom[orig]
@@ -1121,15 +1296,15 @@ class ResultOverlay(QGraphicsView):
                     ks = range(0, c1)
                 else:
                     ks = range(0, g["n"])
+                y0, h = g["y0"], g["y1"] - g["y0"]
                 for k in ks:
                     cx0, cx1 = g["chars"][k]
-                    rect = QGraphicsRectItem(
-                        QRectF(cx0, g["y0"], cx1 - cx0, g["y1"] - g["y0"]))
-                    rect.setBrush(QBrush(QColor(0, 120, 255, 120)))
-                    rect.setPen(QPen(Qt.NoPen))
-                    rect.setZValue(1)   # 第 2 层（选区高亮，同 OCR 层）
-                    self.scene.addItem(rect)
-                    self._hl.append(rect)
+                    path.addRect(QRectF(cx0, y0, cx1 - cx0, h))
+            if path.isEmpty():
+                continue
+            item = _SelectionHighlightItem(path)
+            self.scene.addItem(item)
+            self._hl.append(item)
 
     # ---- 交互 ----
     # ---- 窗口拖动（像普通程序一样移动浮窗）----
@@ -1211,7 +1386,7 @@ class ResultOverlay(QGraphicsView):
         self.focus = (pos, ch)
         self.dragging = True
         self._redraw()
-        self._preview_selection()
+        self._preview_selection(immediate=True)   # 按下即成形：立即刷新（非拖动帧）
 
     def mouseMoveEvent(self, e):
         # 中键拖动平移：按全局位移反向调滚动条（内容跟手）
@@ -1254,7 +1429,7 @@ class ResultOverlay(QGraphicsView):
         self.focus = self._hit_or_clamp(pt)
         self.ranges[self.active] = self._norm(self.anchor, self.focus)
         self._redraw()
-        self._preview_selection()   # 拖动中实时刷新预览
+        self._preview_selection()   # 拖动中：防抖刷新预览（松手时立即刷新）
 
     def mouseReleaseEvent(self, e):
         # 中键平移结束
@@ -1319,7 +1494,7 @@ class ResultOverlay(QGraphicsView):
             self.ranges = [rng]
             self.active = 0
         self._redraw()
-        self._preview_selection()
+        self._preview_selection(immediate=True)   # 双击整行 = 最终态
         self._do_copy()
 
     # ---- 滚轮：图片缩放（zoom_modifier，默认 Ctrl）/ 窗口缩放（geom_zoom_modifier，
@@ -1375,10 +1550,13 @@ class ResultOverlay(QGraphicsView):
         self._img_zoom = zoom
         self._apply_transform()
         t1 = self.transform().m11()
-        # 滚动条补偿：锚点（视口坐标）下的场景点保持不动
+        # 滚动条补偿：锚点（视口坐标）下的场景点保持不动。
+        # 正确公式 v1 = (a + v0) * t1/t0 - a（推导：锚点场景坐标 s=(a+v0)/t0，
+        # 缩放后要求 a = s*t1 - v1）。原实现 v0 + a*(1/t0 - 1/t1) 仅在
+        # v0=0（未平移）时近似成立——大图平移后再缩放，鼠标指向点会漂移
         hb, vb = self.horizontalScrollBar(), self.verticalScrollBar()
-        hb.setValue(int(hb.value() + anchor.x() * (1 / t0 - 1 / t1)))
-        vb.setValue(int(vb.value() + anchor.y() * (1 / t0 - 1 / t1)))
+        hb.setValue(int((anchor.x() + hb.value()) * t1 / t0 - anchor.x()))
+        vb.setValue(int((anchor.y() + vb.value()) * t1 / t0 - anchor.y()))
         self._layout_close_btn()
         self._fgroup.follow()
         self._update_navigator()
@@ -1449,8 +1627,12 @@ class ResultOverlay(QGraphicsView):
     def _start_edge_resize(self, e, edge: str):
         """开始边缘拉伸：记录 (全局点, 当前窗口几何)；拉伸中隐藏滚动条
         （避免随窗口缩放出现/消失造成闪烁），松手恢复。
-        松手兜底见 eventFilter 的全局 MouseButtonRelease 捕获（不依赖
-        grabMouse，避免 QGraphicsView 抓取语义导致释放失败、状态卡死）。"""
+
+        松手保证 = 下面的 `viewport().grabMouse()`（不是 QApplication 级事件
+        过滤器）：抓取后松手事件无论光标在哪都回到 viewport → 本视图
+        mouseReleaseEvent → _end_edge_resize；_end_edge_resize 自己会 releaseMouse。
+        （模块顶部 __init__ 里的说明记录了「为什么可以不要 app 级兜底」。）
+        """
         self._resize_edge = edge
         self._resize_geom = (e.globalPosition().toPoint(), self.geometry())
         self._manual_resize = True
@@ -1530,15 +1712,18 @@ class ResultOverlay(QGraphicsView):
         self._update_navigator()
 
     def eventFilter(self, obj, event):
-        """全局事件过滤器（安装在 QApplication 上）：
-        - 兜底结束拉伸：拉伸中任何位置松左键（即便在窗口外 / 状态栏上），
-          都调用 _end_edge_resize，避免 mouseReleaseEvent 不触发导致 _resize_edge
-          卡死、窗口"无法操作"。
+        """事件过滤器（当前只装在**本窗口的两个滚动条对象**上，不再装到 QApplication）：
         - 滚动条事件拦截：解锁态图片>窗口时滚动条占据窗口右/下边缘，原生会
           截获鼠标事件，导致 ResultOverlay 收不到边沿位置、右/下/角无法拉伸
           （已知 Qt 结构限制）。此处把滚动条最外侧 _EDGE px 的鼠标事件转交边缘
           拉伸：按下即 _start_edge_resize（隐藏滚动条），后续拖动由 viewport 的
-          mouseMoveEvent 接管；其余区域滚动条照常滚动。"""
+          mouseMoveEvent 接管；其余区域滚动条照常滚动。
+        - 分支 1（拉伸中松左键 → 结束拉伸）保留：装到滚动条上时，它是「press 被
+          滚动条吃下、拖动却落在滚动条上」这一路径的收尾兜底。历史上它被当作
+          app 级全局兜底（每个贴图窗口一个过滤器），已按 _start_edge_resize 的
+          grabMouse 论证移除——若日后要恢复全局兜底，把 QApplication 上也装一份
+          本过滤器即可（详见 __init__ 里的说明）。
+        """
         # —— 全局兜底：拉伸中松左键 → 结束拉伸（不吞事件，照常传递）——
         if event.type() == QEvent.MouseButtonRelease \
                 and event.button() == Qt.LeftButton \
@@ -1629,7 +1814,8 @@ class ResultOverlay(QGraphicsView):
         """
         h, w = self.img.shape[:2]
         lw, lh = w / self.dpr, h / self.dpr
-        scr = QApplication.primaryScreen().availableGeometry()
+        # 用窗口所在屏（多显示器下按主屏算会把图缩到与所在屏不匹配的尺寸）
+        scr = screen_available_geometry(self)
         zoom = min(1.0, scr.width() * 0.9 / lw, scr.height() * 0.9 / lh)
         zoom = max(0.05, zoom)
         nw = max(1, int(round(lw * zoom)))
@@ -1738,7 +1924,7 @@ class ResultOverlay(QGraphicsView):
         self.ranges = [[i, 0, i, self.geom[self.box_order[i]]["n"]] for i in range(n)]
         self.active = n - 1
         self._redraw()
-        self._preview_selection()
+        self._preview_selection(immediate=True)   # 全选 = 最终态
         self._set_status(f"已全选 {n} 块 · Shift+C 复制 / Esc 关闭")
 
     def copy_all(self):
@@ -1747,10 +1933,22 @@ class ResultOverlay(QGraphicsView):
         self._do_copy()
 
     def _match_shortcut(self, e, combo) -> bool:
+        """按键事件是否命中该热键。
+
+        修饰键必须**完全相等**，不能用子集判断：单键配置（如状态栏开关 `s`，
+        `mods=0`）时 `(e.modifiers() & 0) == 0` 恒真，于是 Ctrl+S 也会命中——
+        原先只靠「先判组合键、后判单键」的判定顺序巧合避开。本轮改为全等比较，
+        并屏蔽 KeypadModifier / GroupSwitchModifier（小键盘与 Windows AltGr 会
+        带上它们，与用户配置无关）。
+        """
         if combo is None:
             return False
         mods, key = combo
-        return e.key() == key and (e.modifiers() & mods) == mods
+        mask = _qt_flag_value(Qt.ShiftModifier | Qt.ControlModifier
+                              | Qt.AltModifier | Qt.MetaModifier)
+        return (e.key() == key
+                and (_qt_flag_value(e.modifiers()) & mask)
+                == (_qt_flag_value(mods) & mask))
 
     def show_shortcut_panel(self):
         """快捷键速查面板（UI 入口：设置面板调用，不绑定 Ctrl+/）。"""
@@ -1854,6 +2052,13 @@ class ResultOverlay(QGraphicsView):
                 self._toggle_status_strip()
 
     def closeEvent(self, _e):
+        # 停掉待触发的「自动进入标注」定时器（set_boxes 排队），避免窗口
+        # 销毁后回调 _enter_annotation
+        if getattr(self, "_anno_auto_timer", None) is not None:
+            self._anno_auto_timer.stop()
+        # 停掉待触发的选区预览防抖定时器（拖动中关窗时排队），避免销毁后回调
+        if getattr(self, "_preview_timer", None) is not None:
+            self._preview_timer.stop()
         # 关闭图片前：若仍在标注模式且有未落库标注 → 先退出标注触发保存
         # （任何关闭方式：✕ / Esc / 完成 / 程序退出，标注都不丢失）
         if getattr(self, "_anno_mode", False):
@@ -2003,6 +2208,20 @@ class ResultOverlay(QGraphicsView):
         self._fgroup.follow()           # 状态栏（含钉图钉子）跟随图片
         self._layout_navigator()
 
+    def _clamp_bounds(self) -> QRect:
+        """附属浮窗（状态栏/工具栏）的夹取范围 = **整个虚拟桌面的可用区域并集**。
+
+        不能按「本窗口所在那块屏」夹取：跨屏截图时本窗口横跨两屏，按单屏夹取会把
+        附属浮窗整个拽到那一块屏上（实测：图片横跨主副屏时，状态栏/工具栏被拉回
+        主屏）。
+        也不能靠「取点最近的屏」绕开：Qt 的逻辑虚拟桌面在不同分辨率 + 相同缩放下
+        存在**不属于任何屏的缝隙**（实测主屏逻辑宽 2560、副屏逻辑原点 3840，中间
+        2560~3840 无人认领），而缝隙点到**主屏**的矩形距离更近 —— 按屏判定必然
+        偏主屏。所以这一层不该按屏算，直接夹到并集：既不出屏，又绝不跨屏拽动。
+        """
+        u = desktop_union_available()
+        return u if not u.isEmpty() else screen_available_geometry(self)
+
     def _sync_status_strip_pos(self):
         """纯信息状态栏跟随图片窗口：宽度与图片一致（用户拉伸后保持用户宽度），
         最大 1400px（大图不铺满全屏）；位于图片正下方、水平居中。
@@ -2021,8 +2240,7 @@ class ResultOverlay(QGraphicsView):
         w = uw if uw else min(base_w, 1400)     # 最大宽度限制
         w = max(s.minimumWidth(), min(w, 1400))
         s.resize(w, s.sizeHint().height())
-        from PySide6.QtWidgets import QApplication as _QA
-        scr = _QA.primaryScreen().availableGeometry()
+        scr = self._clamp_bounds()   # 夹到虚拟桌面并集，不按单屏（跨屏时会被拽走）
         # 水平居中于图片（图片 AlignCenter 居中于窗口 → 以窗口中心为准）；
         # 垂直锚定**窗口底边**（解锁留白时状态栏贴窗口而非悬在图片底边，消除间隙）
         x = self.x() + (self.width() - w) // 2
@@ -2040,8 +2258,7 @@ class ResultOverlay(QGraphicsView):
         if self._pinned:
             return
         tb = self._toolbar
-        from PySide6.QtWidgets import QApplication as _QA
-        scr = _QA.primaryScreen().availableGeometry()
+        scr = self._clamp_bounds()   # 夹到虚拟桌面并集，不按单屏（跨屏时会被拽走）
         tw = tb.sizeHint().width()
         th = tb.sizeHint().height()
         # 锚点：状态栏（水平以其中心为准；状态栏下方放不下 → 图片下方）

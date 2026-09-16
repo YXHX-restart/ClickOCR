@@ -571,7 +571,6 @@ class _MosaicElement(_BaseElement):
         pm = _make_mosaic_pixmap(base, rect, d.get("block", 8))
         it = QGraphicsPixmapItem(pm)
         it.setPos(rect.topLeft())
-        it.setZValue(4)
         return it
 
 
@@ -645,12 +644,11 @@ class _NumElement(_BaseElement):
         f.setPixelSize(size)
         f.setBold(True)
         cx, cy = d["x"], d["y"]
-        if style in ("paren", "dot", "plain"):
+        if style in ("paren", "plain"):
             # 纯文字样式：无底色，数字用标注色。
             # 缩放与底色类样式一致：按裸数字墨迹高度算 s（与 circle
-            # 同公式），保证同 font_size 下 5 种样式的数字一样大。
-            txt = {"paren": f"({num})", "dot": f"{num}.",
-                   "plain": num}.get(style, num)
+            # 同公式），保证 5 种样式的数字一样大。
+            txt = {"paren": f"({num})"}.get(style, num)
             ti = QGraphicsTextItem(txt)
             ti.setFont(f)
             ti.setDefaultTextColor(color)

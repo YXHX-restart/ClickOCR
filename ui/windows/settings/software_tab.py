@@ -110,8 +110,12 @@ class SoftwareTabMixin:
         cur_fmt = self._cfg.get("software", "save_format", "png").lower()
         if cur_fmt not in ("png", "jpg", "bmp", "webp", "heic", "heif", "avif"):
             cur_fmt = "png"
-        self.combo_save_fmt.setCurrentIndex(
-            self.combo_save_fmt.findData(cur_fmt))
+        if cur_fmt == "heif":
+            cur_fmt = "heic"       # 旧配置值：下拉框只有 heic，映射防 findData=-1
+        i_fmt = self.combo_save_fmt.findData(cur_fmt)
+        # 必须有 >= 0 保护：setCurrentIndex(-1) 会让 currentData() 返回 None，
+        # _save 里 fmt.upper() 直接 AttributeError 中断整个保存流程（所有修改丢失）
+        self.combo_save_fmt.setCurrentIndex(i_fmt if i_fmt >= 0 else 0)
         form.addRow(T("ui.save_fmt", "保存格式"), self.combo_save_fmt)
         self._attach_hint(
             form, self.combo_save_fmt,
@@ -470,50 +474,9 @@ class SoftwareTabMixin:
         self.slider_quality.setEnabled(lossy)
         self.lbl_quality.setEnabled(lossy)
 
-    def _check_install_accel(self):
-        """检测并（开发模式）自动安装所选 GPU 运行时；下载前弹确认。"""
-        from core_engine.ort_runtime import (device_ready, install_runtime,
-                                             install_command, runtime_status,
-                                             DEVICE_PKG, PKG_SIZE)
-        dev = self.combo_accel.currentData()
-        if dev not in DEVICE_PKG:
-            ThemeDialog.info(None, T("gpu.accel", "GPU 加速"), T("ui.gpu_cpu_ok", "CPU 模式无需安装 GPU 运行时。"))
-            return
-        pkg, ep = DEVICE_PKG[dev]
-        if device_ready(dev):
-            ThemeDialog.info(None, T("gpu.accel", "GPU 加速"), T("ui.gpu_ready", "{} 已就绪，无需安装。").format(ep))
-            self._refresh_accel_status()
-            return
-        import sys as _sys
-        if getattr(_sys, "frozen", False):
-            # 打包版已捆绑运行时：直接显示实际状态（已就绪 / 设备不支持自动回退 CPU）
-            ThemeDialog.info(None, T("gpu.accel", "GPU 加速"), runtime_status(dev))
-            self._refresh_accel_status()
-            return
-        if not ThemeDialog.question(None, T("gpu.accel", "GPU 加速"),
-                                     T("ui.gpu_need_install",
-                                       "需要下载安装 {}（{}，需联网）\n"
-                                       "才能使用 {}。安装后请重启程序生效。\n\n是否继续安装？")
-                                     .format(pkg, PKG_SIZE[pkg], ep)):
-            return
-        self.btn_accel_install.setEnabled(False)
-        self.btn_accel_install.setText(T("ui.gpu_installing", "安装中…"))
-        try:
-            ok, msg = install_runtime(dev)
-            if ok:
-                ThemeDialog.info(None, T("gpu.accel", "GPU 加速"), msg)
-            else:
-                ThemeDialog.warning(None, T("gpu.accel", "GPU 加速"), T("ui.gpu_install_fail", "安装失败：\n{}").format(msg))
-        finally:
-            self.btn_accel_install.setEnabled(True)
-            self.btn_accel_install.setText(T("btn.detect", "检测"))
-            self._refresh_accel_status()
-
     def _pick_shot_dir(self):
         cur = self.edit_shot_dir.text().strip()
         d = QFileDialog.getExistingDirectory(
             self, T("ui.pick_shot_dir_title", "选择历史图片保存目录"), cur or str(self._cfg.app_root))
         if d:
             self.edit_shot_dir.setText(d)
-
-    # ---- Tab 2：UI 设置 ----

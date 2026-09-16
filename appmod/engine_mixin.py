@@ -43,6 +43,10 @@ class EngineMixin:
         except Exception as e:  # noqa: BLE001
             self.tray.showMessage("ClickOCR", f"截图失败：{e}",
                                   QSystemTrayIcon.Warning, 3000)
+            # 失败同样要恢复截图前被隐藏的浮窗（start_capture 已把它们全部
+            # 藏进 _hidden_windows）——否则状态栏/面板永久消失，只能重开。
+            # 对照 capture_fullscreen 的失败分支有恢复，此处原先漏了。
+            self._restore_hidden()
             return
         # 成功截图：恢复除旧贴图外的浮窗（旧贴图由新贴图取代）
         self._restore_hidden()
@@ -79,6 +83,15 @@ class EngineMixin:
             w.start()
         self._ocr_seq += 1
         seq = self._ocr_seq
+        # 旧任务尚未完成就被新任务取代：给旧贴图一个明确状态，否则其
+        # 状态栏会永久停留「识别中…」（结果被 seq 校验丢弃后无人通知它）
+        old = getattr(self, "_ocr_pending", None)
+        if old is not None and old.get("ov") is not None \
+                and self._panel_alive(old.get("ov")):
+            try:
+                old["ov"]._set_status("识别中…（已被新任务取代）")
+            except Exception:  # noqa: BLE001
+                pass
         self._ocr_pending = {"seq": seq, "ov": ov, "rid": rid, "kind": kind}
         w.submit(seq, img)
 
@@ -90,6 +103,11 @@ class EngineMixin:
         self._ocr_pending = None
         ov = pend.get("ov")
         if ov is None:
+            return
+        # 识别耗时 1-3s，期间用户可能已关闭贴图窗口（deleteLater）：
+        # 分发前先验活，避免对已销毁的 C++ 对象调用 set_boxes 抛 RuntimeError
+        if not self._panel_alive(ov):
+            log.info("OCR 完成但贴图窗口已关闭，结果丢弃（task %s）", seq)
             return
         if pend.get("kind") == "reocr":
             self._on_reocr_done(ov, pend.get("rid"), boxes, img)
@@ -273,10 +291,11 @@ class EngineMixin:
         # 识别期间图片已切换/内容已变：结果作废（不缓存、不弹窗）
         if self._table_gen != self._img_gen:
             log.info("表格识别完成但图片已变更，结果作废")
-            if self._table_pending_window and self._overlay is not None:
+            ov = self._live_overlay()      # 统一存活校验（见 FloatMixin._live_overlay）
+            if self._table_pending_window and ov is not None:
                 # 待开窗请求仍有效：对当前图片重新识别
                 self._table_gen = self._img_gen
-                self._table_recognize(self._overlay)
+                self._table_recognize(ov)
             return
         self._table_result = result
         # SLANet 模型不常驻：识别完立即卸载释放 ~150-200MB
@@ -297,7 +316,10 @@ class EngineMixin:
     def _open_table_window(self):
         """双击图片 / 长按「表格」按钮 / Ctrl+Shift+T：打开表格窗口
         （此时才使用 SLANet 识别；识别完卸载，不常驻内存）。"""
-        self._ensure_save(self._overlay)   # 点表格 = 操作，确保落库
+        ov = self._live_overlay()          # 统一存活校验（见 FloatMixin._live_overlay）
+        if ov is None:
+            return
+        self._ensure_save(ov)              # 点表格 = 操作，确保落库
         # 仅当缓存结果是「当前图片」的才复用；否则重新识别
         # （修复：长按/双击表格显示上一张图的识别结果）
         if self._table_result is not None and self._table_gen == self._img_gen:
@@ -308,8 +330,7 @@ class EngineMixin:
             return
         self._table_pending_window = True
         self._table_gen = self._img_gen    # 本次识别绑定当前图片代次
-        if self._overlay is not None:
-            self._table_recognize(self._overlay)
+        self._table_recognize(ov)
 
 
     def _show_table_panel(self, result):
@@ -327,8 +348,12 @@ class EngineMixin:
 
     def _on_table_failed(self, msg):
         self._table_busy = False
-        if self._overlay is not None:
-            self._overlay._set_status("表格识别失败")
+        # 失败同样消费掉「待开窗」请求：否则残留 True，下次任意一次成功
+        # 的识别都会带着它意外弹窗（对照 _on_table_done 成功路径有重置）
+        self._table_pending_window = False
+        ov = self._live_overlay()          # 统一存活校验（见 FloatMixin._live_overlay）
+        if ov is not None:
+            ov._set_status("表格识别失败")
         self.tray.showMessage("ClickOCR", f"表格识别失败：{msg}",
                               QSystemTrayIcon.Warning, 4000)
 

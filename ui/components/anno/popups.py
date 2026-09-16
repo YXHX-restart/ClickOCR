@@ -23,8 +23,9 @@ from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QPushButton,
 
 from platform_compat.fonts import ui_font_family
 
-# 标注核心纯逻辑（命令撤销体系 + 序列化，无 Qt 依赖，见 ui/anno_core.py）
+# 标注核心纯逻辑（命令撤销体系 + 序列化 + 样式合法值唯一来源，无 Qt 依赖）
 from ui.core.anno_core import (ANNO_VERSION, UNDO_LIMIT, SERIALIZABLE_TYPES,
+                          TOOL_STYLES, NUM_STYLES, MOSAIC_MODES,
                           _Cmd, _AddCmd, _DeleteCmd, _MoveCmd, _EditCmd,
                           _ClearCmd, _RenumberCmd,
                           anno_to_json, anno_from_json)
@@ -38,90 +39,6 @@ from ui.core.anno_core import (ANNO_VERSION, UNDO_LIMIT, SERIALIZABLE_TYPES,
 
 
 # ---- 工具栏 ----
-class _WidthSliderPopup(QWidget):
-    """线宽滑块浮层（音量条样式）：单击线宽按钮弹出，拖动调节，点外自动关闭。"""
-
-    valueChanged = Signal(int)
-
-    def __init__(self, parent=None, value: int = 2):
-        super().__init__(parent)
-        self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setObjectName("WidthSliderPopup")
-        card = QFrame(self)
-        card.setObjectName("width_card")
-        card.setAttribute(Qt.WA_StyledBackground)
-        lay = QHBoxLayout(card)
-        lay.setContentsMargins(10, 8, 10, 8)
-        lay.setSpacing(6)
-        self.slider = QSlider(Qt.Horizontal)
-        self.slider.setRange(1, 32)
-        self.slider.setValue(value)
-        self.slider.setFixedWidth(130)
-        self.slider.valueChanged.connect(self.valueChanged.emit)
-        lay.addWidget(self.slider)
-        self.lbl = QLabel(str(value))
-        self.lbl.setObjectName("width_val")
-        self.lbl.setFixedWidth(18)
-        self.lbl.setAlignment(Qt.AlignCenter)
-        lay.addWidget(self.lbl)
-        self.slider.valueChanged.connect(lambda v: self.lbl.setText(str(v)))
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.addWidget(card)
-
-
-class _WidthButton(QPushButton):
-    """线宽按钮：**单击**弹出滑块（音量条样式）；**按住**左右/上下滑动直接调节
-    （右大左小、上大下小）。按下移动超过阈值判定为拖动，否则松开视为单击弹滑块。"""
-
-    clicked_pop = Signal()         # 单击 → 弹滑块
-    width_adjusted = Signal(int)   # 按住拖动 → 实时线宽
-
-    def __init__(self, text: str = "2", parent=None):
-        super().__init__(text, parent)
-        self._press = None        # (起始 x, 起始 y, 起始线宽)
-        self._dragging = False
-
-    def mousePressEvent(self, e):
-        if e.button() == Qt.LeftButton:
-            try:
-                w0 = int(self.text())
-            except ValueError:
-                w0 = 2
-            self._press = (e.globalPosition().x(), e.globalPosition().y(), w0)
-            self._dragging = False
-            self.setDown(True)   # 按下高亮
-            return
-        super().mousePressEvent(e)
-
-    def mouseMoveEvent(self, e):
-        if self._press is not None and (e.buttons() & Qt.LeftButton):
-            sx, sy, w0 = self._press
-            dx = e.globalPosition().x() - sx   # 右为正
-            dy = e.globalPosition().y() - sy   # 下为正
-            # 移动超过阈值 → 判定为拖动（否则是准备单击）
-            if not self._dragging and (abs(dx) >= 4 or abs(dy) >= 4):
-                self._dragging = True
-            if self._dragging:
-                # 右大左小（dx 增大）、上大下小（-dy 增大）；约 8px = 1 档
-                new_w = max(1, min(32, w0 + round((dx - dy) / 8.0)))
-                self.width_adjusted.emit(new_w)
-            return
-        super().mouseMoveEvent(e)
-
-    def mouseReleaseEvent(self, e):
-        if self._press is not None:
-            was_drag = self._dragging
-            self._press = None
-            self._dragging = False
-            self.setDown(False)
-            if not was_drag:              # 未拖动 → 单击 → 弹滑块
-                self.clicked_pop.emit()
-            return
-        super().mouseReleaseEvent(e)
-
-
 class _ColorSizeRow(QWidget):
     """颜色 + 大小 配置行（各标注工具子选项浮层通用，替代工具栏主行格子）。
 
@@ -412,36 +329,8 @@ class _StyleIconRow(QWidget):
 class _ToolOptionsPopup(_AnnoPopupBase):
     """通用工具选项浮层（矩形/箭头/画笔）：样式图标行 + 颜色/大小配置行。"""
 
-    TOOL_STYLES = {
-        "rect": (("rect", "rect-outline", "空心矩形"),
-                 ("filled", "rect-filled", "实心矩形"),
-                 ("round", "rect-round", "圆角矩形"),
-                 ("ellipse", "rect-ellipse", "椭圆"),
-                 ("dialog", "rect-dialog", "对话框气泡"),
-                 ("highlight", "rect-highlight", "荧光高亮框"),
-                 ("dash", "rect-dash", "虚线框")),
-        "arrow": (("single", "arrow-single", "单箭头"),
-                  ("double", "arrow-double", "双箭头"),
-                  ("dash", "arrow-dash", "虚线箭头"),
-                  ("elbow", "arrow-elbow", "直角箭头"),
-                  ("curve", "arrow-curve", "曲线箭头"),
-                  ("dot", "arrow-dot", "点线箭头"),
-                  ("circle", "arrow-circle", "圆点箭头")),
-        "line": (("solid", "line-solid", "实线"),
-                 ("dash", "line-dash", "虚线"),
-                 ("dot", "line-dot", "点线"),
-                 ("dashdot", "line-dashdot", "点划线"),
-                 ("double", "line-double", "双线"),
-                 ("wavy", "line-wavy", "波浪线"),
-                 ("zigzag", "line-zigzag", "锯齿线")),
-        "pen": (("solid", "pen-solid", "实线画笔"),
-                ("highlight", "pen-highlight", "荧光笔"),
-                ("dash", "pen-dash", "虚线画笔"),
-                ("dot", "pen-dot", "点线笔刷"),
-                ("double", "pen-double", "双线笔刷"),
-                ("wavy", "pen-wavy", "波浪笔刷"),
-                ("glow", "pen-glow", "发光笔刷")),
-    }
+    # 样式表唯一来源见 ui/core/anno_core.TOOL_STYLES（本类别名仅为兼容旧引用）
+    TOOL_STYLES = TOOL_STYLES
 
     color_changed = Signal(tuple)
     width_changed = Signal(int)
@@ -491,11 +380,8 @@ class _NumPopup(_AnnoPopupBase):
     Qt.Tool（非 Popup）：点击外部保持打开，再次点击/切换功能才关闭。
     """
 
-    STYLES = (("circle", "num-circle", "实心圆"),
-              ("circle_o", "num-circle-o", "空心圆"),
-              ("square", "num-square", "圆角方"),
-              ("paren", "num-paren", "(1) 括号"),
-              ("plain", "num-plain", "纯数字"))
+    # 序号样式唯一来源见 ui/core/anno_core.NUM_STYLES
+    STYLES = NUM_STYLES
 
     start_changed = Signal(int)
     style_selected = Signal(str)

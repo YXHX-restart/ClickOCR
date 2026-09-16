@@ -19,11 +19,12 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QApplication,
 )
 
-from core_engine.ai_pipeline import TableResult
+from core_engine.ai_pipeline import TableCell, TableResult
 from core_engine.table_export import TableExportService
 
 from ui.base.card_window import CardWindow
 from ui.base.theme_dialog import ThemeDialog
+from ui.base.widgets import screen_available_geometry
 
 
 class _ResizeGrip(QWidget):
@@ -49,10 +50,12 @@ class _ResizeGrip(QWidget):
         delta = e.globalPosition().toPoint() - self._start
         nw = max(w.minimumWidth(), self._start_geo.width() + delta.x())
         nh = max(w.minimumHeight(), self._start_geo.height() + delta.y())
-        # clamp 屏幕（右下不超过可用区）
-        scr = QApplication.primaryScreen().availableGeometry()
-        nw = min(nw, scr.right() - self._start_geo.x() + 1)
-        nh = min(nh, scr.bottom() - self._start_geo.y() + 1)
+        # clamp 屏幕（右下不超过**窗口所在屏**的可用区；用主屏几何会在副屏上
+        # 算出负宽度并阻止向右/下放大）
+        scr = screen_available_geometry(w)
+        if not scr.isNull():
+            nw = min(nw, max(1, scr.right() - self._start_geo.x() + 1))
+            nh = min(nh, max(1, scr.bottom() - self._start_geo.y() + 1))
         w.resize(nw, nh)
 
     def mouseReleaseEvent(self, _e):
@@ -105,10 +108,12 @@ class TablePreviewPanel(CardWindow):
         self.btn_tsv.clicked.connect(self._copy_tsv)
         self.btn_close.clicked.connect(self.close)
 
-        # 默认窗体 = 内容所需尺寸的 2 倍（clamp 屏幕内）
+        # 默认窗体 = 内容所需尺寸的 2 倍（clamp 到鼠标所在屏内）
         self.adjustSize()
-        from PySide6.QtGui import QGuiApplication
-        scr = QGuiApplication.primaryScreen().availableGeometry()
+        scr = screen_available_geometry(self)
+        if scr.isNull():
+            from PySide6.QtGui import QGuiApplication
+            scr = QGuiApplication.primaryScreen().availableGeometry()
         self.resize(min(int(self.width() * 2), scr.width() - 20),
                     min(int(self.height() * 2), scr.height() - 20))
         # 缩放下限 = 内容所需（表格/按钮完整可见）
@@ -167,23 +172,29 @@ class TablePreviewPanel(CardWindow):
         QApplication.clipboard().setText(tsv)   # 直接复制，不弹窗
 
     def _table_with_edits(self) -> TableResult:
-        """把控件编辑值回填到 TableResult（只改 text，保留行列结构）。"""
+        """把控件编辑值回填到 TableResult（只改 text，保留行列结构）。
+
+        返回**新对象**且不污染 self._table：原先 copy.copy 为浅拷贝，
+        随后的 cell.text = ... 原地改的是 self._table 里同一批 TableCell，
+        导致「导出/复制一次后，预览面板显示的文字被静默覆盖」。
+        原 cells 为空但行列数 > 0 时按编辑网格重建 cells（否则编辑内容全丢）。
+        """
         grid = self._grid_rows()
         import copy
         edited = copy.copy(self._table)
-        cells = []
-        for r, row in enumerate(grid):
-            for c, val in enumerate(row):
-                cells.append(type(self._table.cells[0])(
-                    text=val, row=r, col=c) if self._table.cells else None)
-        # 若原 cells 为空，构造纯网格
         if self._table.cells:
-            edited.cells = list(self._table.cells)
-            for cell in edited.cells:
-                if 0 <= cell.row < len(grid) and 0 <= cell.col < len(grid[cell.row]):
-                    cell.text = grid[cell.row][cell.col]
+            new_cells = []
+            for cell in self._table.cells:
+                c = copy.copy(cell)
+                if 0 <= c.row < len(grid) and 0 <= c.col < len(grid[c.row]):
+                    c.text = grid[c.row][c.col]
+                new_cells.append(c)
+            edited.cells = new_cells
         else:
-            edited.cells = []
+            edited.cells = [
+                TableCell(text=val, row=r, col=c)
+                for r, row in enumerate(grid) for c, val in enumerate(row)
+            ]
         return edited
 
     def closeEvent(self, e):

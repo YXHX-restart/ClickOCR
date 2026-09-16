@@ -202,8 +202,12 @@ class HotkeyTabMixin:
                    "copy_image", "ctrl+shift+c")
         add_hk_row("hk.copy_raw_image", "复制原图", "hotkey_overlay",
                    "copy_raw_image", "ctrl+alt+c")
-        add_hk_row("hk.through", "点击穿透（全局）", "hotkey_global",
-                   "through", "alt+f")
+        # 点击穿透（全局热键，默认 Alt+F）：必须接 apply——原先只写 config，
+        # 改键保存后新键不注册（重启才生效）、改 off 后旧键仍活着
+        apply_through = self._secondary_apply(
+            4, "hotkey_global", "through", "点击穿透", hint="alt+f")
+        _row("hk.through", "点击穿透（全局）", "hotkey_global",
+             "through", "alt+f", apply=apply_through)
 
         # 图片缩放修饰键（[hotkey_overlay] zoom_modifier，非按键行，用下拉）
         self.combo_zoom_mod = QComboBox()
@@ -303,11 +307,17 @@ class HotkeyTabMixin:
                 if _v is None:
                     msgs.append(f"{label}快捷键格式无效（示例：{hint}）")
                 else:
+                    # 注册失败（已回滚到旧键）时**不写 config**：否则记录的是
+                    # 未生效的新键，重启后再注册再失败 → 热键静默丢失，
+                    # 且 UI 显示新键、实际生效旧键（对照主热键 apply_shot 的写法）
+                    ok = True
                     if self._hotkey is not None:
                         if not self._hotkey.set_secondary_combo(hid, combo):
+                            ok = False
                             msgs.append(f"{label}快捷键注册失败（被占用，已回滚）")
-                    self._cfg.cp.set(sec, key, combo)
-                    msgs.append(f"{label}快捷键：{combo}")
+                    if ok:
+                        self._cfg.cp.set(sec, key, combo)
+                        msgs.append(f"{label}快捷键：{combo}")
             return msgs
 
         return apply

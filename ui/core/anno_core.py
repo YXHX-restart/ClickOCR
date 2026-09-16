@@ -21,6 +21,61 @@ UNDO_LIMIT = 500
 SERIALIZABLE_TYPES = ("rect", "arrow", "pen", "line", "mosaic", "mosaic_pen",
                       "text", "num")
 
+# ---- 各工具的合法样式（**唯一来源**）----
+# 每项 = (样式 id, 图标名, 中文标签)。原先这张表散落三处（本表 + 浮层展示 +
+# 工具栏恢复白名单），且工具栏那份是缩水版（各 3 种），导致 ellipse/elbow/
+# wavy/glow 等 16 种样式在重启后被静默回退默认值。收敛到此，其余各处只读。
+TOOL_STYLES = {
+    "rect": (("rect", "rect-outline", "空心矩形"),
+             ("filled", "rect-filled", "实心矩形"),
+             ("round", "rect-round", "圆角矩形"),
+             ("ellipse", "rect-ellipse", "椭圆"),
+             ("dialog", "rect-dialog", "对话框气泡"),
+             ("highlight", "rect-highlight", "荧光高亮框"),
+             ("dash", "rect-dash", "虚线框")),
+    "arrow": (("single", "arrow-single", "单箭头"),
+              ("double", "arrow-double", "双箭头"),
+              ("dash", "arrow-dash", "虚线箭头"),
+              ("elbow", "arrow-elbow", "直角箭头"),
+              ("curve", "arrow-curve", "曲线箭头"),
+              ("dot", "arrow-dot", "点线箭头"),
+              ("circle", "arrow-circle", "圆点箭头")),
+    "line": (("solid", "line-solid", "实线"),
+             ("dash", "line-dash", "虚线"),
+             ("dot", "line-dot", "点线"),
+             ("dashdot", "line-dashdot", "点划线"),
+             ("double", "line-double", "双线"),
+             ("wavy", "line-wavy", "波浪线"),
+             ("zigzag", "line-zigzag", "锯齿线")),
+    "pen": (("solid", "pen-solid", "实线画笔"),
+            ("highlight", "pen-highlight", "荧光笔"),
+            ("dash", "pen-dash", "虚线画笔"),
+            ("dot", "pen-dot", "点线笔刷"),
+            ("double", "pen-double", "双线笔刷"),
+            ("wavy", "pen-wavy", "波浪笔刷"),
+            ("glow", "pen-glow", "发光笔刷")),
+}
+
+# 序号样式（id, 图标名, 中文标签）
+NUM_STYLES = (("circle", "num-circle", "实心圆"),
+              ("circle_o", "num-circle-o", "空心圆"),
+              ("square", "num-square", "圆角方"),
+              ("paren", "num-paren", "(1) 括号"),
+              ("plain", "num-plain", "纯数字"))
+
+# 马赛克模式
+MOSAIC_MODES = ("pen", "rect", "textbox")
+
+
+def tool_style_ids(tool: str) -> tuple:
+    """某工具的全部合法样式 id（校验/回读用；未知工具返回空元组）。"""
+    return tuple(row[0] for row in TOOL_STYLES.get(tool, ()))
+
+
+def num_style_ids() -> tuple:
+    """序号的全部合法样式 id。"""
+    return tuple(row[0] for row in NUM_STYLES)
+
 
 class _Cmd:
     """撤销命令基类：apply=正向执行（redo），unapply=反向撤销（undo）。"""

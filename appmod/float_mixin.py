@@ -29,6 +29,7 @@ from hotkey import HotkeyHost
 from platform_compat import capabilities, scroll_capture_supported
 from platform_compat.fonts import ui_font_family
 from ui.base.theme import apply_theme, resolve_theme, install_system_follow
+from ui.base.widgets import screen_available_geometry
 from ui.windows.selection import SelectionOverlay
 from ui.windows.result_overlay import ResultOverlay
 from appmod.workers import OcrWorker, TableWorker, EngineLoader
@@ -46,6 +47,28 @@ class FloatMixin:
         except Exception:
             return o is not None
 
+    def _live_overlay(self):
+        """当前贴图窗口；若已被销毁则返回 None（并顺手清掉悬空引用）。
+
+        **这是 self._overlay 的唯一读取入口。** 收敛原因：
+        窗口关闭走 `deleteLater()`，`self._overlay` 不会自动清空，于是它可能指向
+        一个已销毁的 C++ 对象。对这种对象取属性会抛
+        `RuntimeError: Internal C++ object already deleted`，而
+        `getattr(o, name, default)` **吞不掉**这个异常——它会从槽函数一路抛出去，
+        部分 PySide6 版本直接终止进程。
+
+        历史上这个校验是「报出一个入口就补一处」（engine_mixin 补了 3 处、
+        history_mixin._reocr 漏了），所以改为统一入口：新代码不要再直接读
+        `self._overlay`。
+        """
+        ov = self._overlay
+        if ov is None:
+            return None
+        if not self._panel_alive(ov):
+            self._overlay = None          # 悬空引用就地清理
+            return None
+        return ov
+
 
     def _place_restored_overlay(self, ov):
         """历史恢复图定位：优先放历史面板左侧（垂直居中）；左边放不下则放面板右侧。
@@ -57,7 +80,11 @@ class FloatMixin:
                           if self._panel_alive(p) and p.isVisible()), None)
         if panel is None:
             return
-        scr = QApplication.primaryScreen().availableGeometry()
+        # 取**面板所在屏**的可用区域，不能用 primaryScreen()：多显示器下按主屏
+        # availableGeometry 夹取会把副屏上的窗口强行拉回主屏边界
+        # （ui/base/widgets.py 的 screen_available_geometry 文档已点名这个坑）。
+        # 面板不存在时退回主屏。
+        scr = screen_available_geometry(panel)
         pg = panel.frameGeometry()
         x = pg.left() - ov.width() - 12          # 默认：面板左侧
         if x < scr.left() + 4:                   # 左边放不下 → 放面板右侧（紧邻，不飞角落）
@@ -77,6 +104,8 @@ class FloatMixin:
         """
         wins = []
         for ov in self._overlays:      # 钉图已从 _overlays 移出，这里只含普通贴图 + 历史图
+            if not self._panel_alive(ov):
+                continue               # 防御：跳过可能残留的死引用
             if ov._status_strip is not None:
                 wins.append(ov._status_strip)
             if ov._toolbar is not None:
@@ -89,6 +118,33 @@ class FloatMixin:
             wins.append(p)
         return wins
 
+
+    @staticmethod
+    def _restore_overlay_geometry(ov, intend):
+        """把窗口放回**截图时的位置**（压掉 Qt 首次显示时的兜底居中）。
+
+        背景：`QPlatformWindow::initialGeometry()` 在顶层窗口**首次显示**时会判断
+        「窗口中心是否落在某块屏上」，不在就**居中到主屏**。而跨屏框选的结果窗口
+        中心，恰好落在 Qt 逻辑空间的**屏间缝隙**里（实测主屏逻辑宽 2560、副屏逻辑
+        原点 3840，中间 2560~3840 无人认领 → `screenAt` 返回 None），于是被拽到
+        主屏正中。
+
+        这条调整发生在 `setGeometry` **之后**（首次 show 时），所以显示之后必须
+        原样再摆一次，窗口才会停在截图的位置。
+
+        **这里只还原，绝不做夹取/居中对齐**：用户要的就是「窗口就在我截的那个
+        位置」。任何「夹进某块屏」「居中到某块屏」都会把窗口从选区位置搬走，
+        反而变成飞来飞去。
+        """
+        try:
+            cur = ov.geometry()
+            if (cur.x(), cur.y()) != (intend.x(), intend.y()):
+                # 只在 Qt 真的动过窗口时记录，且降为 debug：正常截图不打日志
+                log.debug("贴图窗口落位修正：Qt 兜底居中 %s → 截图位置 %s",
+                          cur.getRect(), intend.getRect())
+                ov.setGeometry(intend)
+        except Exception:            # noqa: BLE001  位置修正失败不该阻断贴图
+            pass
 
     def _make_overlay(self, img, raw, boxes=None, persistent=False):
         """创建贴图窗口 + 纯信息状态栏 + 统一工具栏（均有全局开关）。
@@ -109,24 +165,28 @@ class FloatMixin:
         from ui.windows.result_overlay import ResultOverlay
         from ui.components.status_strip import StatusStrip
         from ui.components.toolbar import ToolBar
-        ov = ResultOverlay(img, raw, self.dpr, self.config)
+        ov = ResultOverlay(img, raw, getattr(self, "_capture_dpr", self.dpr),
+                           self.config)
         ov._persistent = persistent
-        ov.reocr_requested.connect(self._reocr)          # Ctrl+R 重新 OCR
-        ov.table_requested.connect(                      # Ctrl+Shift+T → 打开表格窗口
-            self._open_table_window)
-        ov.table_window_requested.connect(               # 双击/长按表格 → 打开窗口
-            self._open_table_window)
-        ov.annotations_changed.connect(                   # 标注持久化
-            partial(self._save_annotations, ov))
-        ov.fav_requested.connect(                         # 收藏当前截图
-            partial(self._favorite_overlay, ov))
-        ov.pin_toggled.connect(                           # 钉图切换（隐藏浮层，只留钉子）
-            partial(self._pin_overlay, ov))
-        ov.ocr_needed.connect(                            # 无 OCR 结果点文字框/表格
-            partial(self._ocr_on_demand, ov))
-        ov.done_requested.connect(self._on_overlay_done)   # 完成：确保保存历史后关闭
-        ov.copied.connect(partial(self._on_copied, ov))    # 复制文字：确保落库
-        ov.closed.connect(partial(self._on_overlay_closed, ov))  # 用户关闭 → 移出列表
+        # 信号连接统一走 _bind：同时登记到 ov._bound_signals，_dispose_overlay
+        # 遍历该列表注销（原先「连接清单」与「注销清单」是两处手写列表，新增
+        # 信号忘记同步就会复现「关窗后内存不释放、RSS 持续上涨」的信号环）
+        self._bind(ov, ov.reocr_requested, self._reocr)      # Ctrl+R 重新 OCR
+        self._bind(ov, ov.table_requested,                   # Ctrl+Shift+T 开表格
+                   self._open_table_window)
+        self._bind(ov, ov.table_window_requested,            # 双击/长按开表格
+                   self._open_table_window)
+        self._bind(ov, ov.annotations_changed,               # 标注持久化
+                   partial(self._save_annotations, ov))
+        self._bind(ov, ov.fav_requested,                     # 收藏当前截图
+                   partial(self._favorite_overlay, ov))
+        self._bind(ov, ov.pin_toggled,                       # 钉图切换
+                   partial(self._pin_overlay, ov))
+        self._bind(ov, ov.ocr_needed,                        # 点文字框/表格补识别
+                   partial(self._ocr_on_demand, ov))
+        self._bind(ov, ov.done_requested, self._on_overlay_done)   # 完成
+        self._bind(ov, ov.copied, partial(self._on_copied, ov))    # 复制文字
+        self._bind(ov, ov.closed, partial(self._on_overlay_closed, ov))
         # 纯信息状态栏（[ui] strip_enabled，默认开）
         if self.config.getbool("ui", "strip_enabled", True):
             strip = StatusStrip()
@@ -135,7 +195,13 @@ class FloatMixin:
         if self.config.getbool("ui", "toolbar_enabled", True):
             toolbar = ToolBar()
             ov.set_toolbar(toolbar)
+        # ResultOverlay 构造期已按 raw/dpr 摆到截图位置 —— 先记下来
+        _intend = ov.geometry()
         ov.show()
+        # 显示后必须原样摆回：Qt 的 initialGeometry 会在首次显示时把「中心不在任何
+        # 屏上」的顶层窗口居中到主屏（跨屏时中心正落在屏间缝隙里），它发生在
+        # setGeometry 之后。这里**只还原，不做夹取/对齐**。
+        self._restore_overlay_geometry(ov, _intend)
         if ov._status_strip is not None:
             ov._status_strip.show()
             ov._status_strip.raise_()
@@ -144,6 +210,12 @@ class FloatMixin:
             ov._toolbar.raise_()
         ov._sync_status_strip_pos()
         ov._sync_toolbar_pos()
+        # 关闭按钮是**独立顶层窗体**，且它在 __init__ 里比 setGeometry 更晚创建 ——
+        # 定位只挂在 moveEvent/resizeEvent 上时，构造期的 moveEvent 会因「btn_close
+        # 还没建」提前返回，之后若窗口不再移动就**永远不定位**，按钮停在默认位置
+        # （表现为截图后关闭按钮跑到别的角落）。
+        if getattr(ov, "btn_close", None) is not None:
+            ov._layout_close_btn()
         if boxes is not None:
             ov.set_boxes(boxes)
         self._overlays.append(ov)
@@ -179,6 +251,16 @@ class FloatMixin:
         """
         if ov in self._overlays:
             self._overlays.remove(ov)
+        # 钉图态直接关窗（✕/Esc）同样要从 _pins 移除：钉图窗口不在 _overlays
+        # 里，原先只清 _overlays 会在 _pins 留下死引用，后续 _trim_pins/
+        # _toggle_through_top/_sync_favorite 遍历时对已销毁的 C++ 对象调用
+        # 方法抛 RuntimeError
+        if ov in self._pins:
+            self._pins.remove(ov)
+        # 悬空引用就地清空：self._overlay 是「最新一个贴图窗口」，关闭后
+        # 若不清空，后续 _live_overlay()/Ctrl+R 等路径会读到已销毁对象
+        if ov is self._overlay:
+            self._overlay = None
         # 「截图无操作也保存」开启时：截图窗口未做任何操作就被关闭 → 仍落库
         # （_save_record 已判 history_id 为空才写，历史恢复的窗口自动跳过）
         if self.config.getbool("software", "save_no_op_close", False):
@@ -186,21 +268,32 @@ class FloatMixin:
         self._dispose_overlay(ov)
 
 
+    @staticmethod
+    def _bind(ov, sig, slot):
+        """连接信号并登记到 ov._bound_signals，供 _dispose_overlay 统一注销。
+
+        用 Signal 对象而非信号名登记：新增连接时无需再维护一份注销名单。
+        """
+        sig.connect(slot)
+        try:
+            ov._bound_signals.append(sig)
+        except AttributeError:
+            ov._bound_signals = [sig]
+
     def _dispose_overlay(self, ov):
         """断开窗口的全部信号连接、销毁窗口、回收内存（幂等，可安全多次调用）。"""
-        # 断开所有 partial 绑定的信号：消除 partial(.,ov) ↔ ov 持有信号 的自引用环，
-        # 否则 Python 引用计数无法归零、C++ 对象不析构、图像/场景内存不释放。
-        for sig_name in (
-            "reocr_requested", "table_requested", "table_window_requested",
-            "annotations_changed", "fav_requested", "pin_toggled",
-            "ocr_needed", "done_requested", "copied", "closed",
-        ):
+        # 断开 _bind 登记过的全部信号：消除 partial(.,ov) ↔ ov 持有信号 的
+        # 自引用环，否则 Python 引用计数无法归零、C++ 对象不析构、
+        # 图像/场景内存不释放。
+        for sig in list(getattr(ov, "_bound_signals", [])):
             try:
-                sig = getattr(ov, sig_name, None)
-                if sig is not None:
-                    sig.disconnect()
+                sig.disconnect()
             except Exception:  # noqa: BLE001
                 pass
+        try:
+            ov._bound_signals = []
+        except Exception:  # noqa: BLE001
+            pass
         try:
             ov.deleteLater()
         except Exception:  # noqa: BLE001
@@ -268,22 +361,22 @@ class FloatMixin:
     def _trim_group(self, persistent: bool, limit: int):
         """裁剪 _overlays 中 persistent 状态 == persistent 的窗口到 limit 个。"""
         while sum(1 for o in self._overlays
-                  if bool(getattr(o, "_persistent", False)) == persistent) > limit:
+                  if self._panel_alive(o)
+                  and bool(getattr(o, "_persistent", False)) == persistent) > limit:
             victim = None
             for old in self._overlays:      # 列表头部 = 最旧
-                if bool(getattr(old, "_persistent", False)) == persistent:
+                if self._panel_alive(old) \
+                        and bool(getattr(old, "_persistent", False)) == persistent:
                     victim = old
                     break
             if victim is None:
                 break
             self._overlays.remove(victim)
-            victim.close()          # → closeEvent → closed 信号 → _on_overlay_closed 完整清理
-            if victim._status_strip is not None:
-                victim._status_strip.close()
-                victim._status_strip.deleteLater()
-            if victim._toolbar is not None:
-                victim._toolbar.close()
-                victim._toolbar.deleteLater()
+            # close() → ResultOverlay.closeEvent 逐个清理状态栏/工具栏等子窗口
+            # → closed 信号 → _on_overlay_closed 完整清理（断信号 + deleteLater）。
+            # 此处不再手动 close 子窗口：与上述流程重复，且子窗口可能已被销毁，
+            # 对残留的 Python 引用调 close() 会抛 RuntimeError。
+            victim.close()
 
 
     def _trim_pins(self):
@@ -301,8 +394,10 @@ class FloatMixin:
 
         穿透时鼠标点击落到桌面（可操作下层程序），窗口仍可见；再按 Alt+F 取消。
         """
+        # 统一验活过滤：列表中可能残留已销毁引用（防御），isVisible 前必须
+        # 先过 _panel_alive（对死对象调 isVisible 会抛 RuntimeError）
         wins = [w for w in list(self._overlays) + list(self._pins)
-                if w.isVisible()]
+                if self._panel_alive(w) and w.isVisible()]
         if not wins:
             return
         wins[-1].toggle_through()        # 列表尾部 = 最近打开的，视为最上层

@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLineEdit, QListWidget,
 
 from ui.base.card_window import CardWindow
 from ui.base.texts import T
+from ui.base.widgets import screen_available_geometry
 from ui.components.annotation import anno_from_json, render_annotated_image
 
 
@@ -134,10 +136,12 @@ class _ResizeHandle(QWidget):
             nh = max(min_h, h0 - delta.y()); y = y0 + (h0 - nh)
         elif self._edges & self.B:
             nh = max(min_h, h0 + delta.y())
-        # clamp 屏幕可用区（不拖出屏）
-        scr = QApplication.primaryScreen().availableGeometry()
-        nw = min(nw, scr.right() - x + 1)
-        nh = min(nh, scr.bottom() - y + 1)
+        # clamp 屏幕可用区（不拖出屏）。必须用**窗口所在屏**的几何：窗口在副屏
+        # 时按主屏右/下边界夹取会算出负宽度，且无法向该屏右侧/下方放大。
+        scr = screen_available_geometry(w)
+        if not scr.isNull():
+            nw = min(nw, max(1, scr.right() - x + 1))
+            nh = min(nh, max(1, scr.bottom() - y + 1))
         w.setGeometry(x, y, nw, nh)
 
     def mouseReleaseEvent(self, _e):
@@ -153,9 +157,8 @@ class _DragImageLabel(QLabel):
     否则仅拖出本张。
     """
 
-    def __init__(self, img_path: str, rid=None, panel=None, lst=None, parent=None):
+    def __init__(self, rid=None, panel=None, lst=None, parent=None):
         super().__init__(parent)
-        self._img_path = img_path
         self._rid = rid
         self._panel = panel
         self._lst = lst
@@ -321,6 +324,10 @@ class HistoryPanel(CardWindow):
         self._thumb_dir = Path(screenshots_dir) / "thumb" if screenshots_dir \
             else Path.cwd() / "screenshots" / "thumb"
         self._thumb_width = thumb_width
+        self._thumb_cache: dict = {}    # 缩略图 LRU 缓存（见 _cached_thumb）
+        self._batch_depth = 0           # >0 时抑制 reload（批量操作合并刷新）
+        self._batch_dirty = False       # 抑制期间是否发生过变更
+        self._last_sel = {}             # 各列表上次的选中状态（增量刷样式）
 
         self.card_lay.setSpacing(10)
 
@@ -356,6 +363,27 @@ class HistoryPanel(CardWindow):
         self.tabs.addTab(self.list_has_anno, T("hist.tab_has_anno", "有标注"))
         self.tabs.addTab(self.list_fav, T("hist.tab_fav", "收藏"))
         self.card_lay.addWidget(self.tabs, 1)
+
+        # ---- 拖入图片后自动 OCR 开关：标签栏「收藏」右侧的蓝/灰切换钮 ----
+        #   （[software] drop_ocr_auto，与软件设置「拖入图片后自动 OCR」同源）
+        # 作为 self.tabs 的子控件叠加在标签栏末行右侧：水平贴最右端，
+        # 垂直与标签文字同一行对齐。
+        self._cap_btn = QPushButton(T("hist.btn_drop_ocr", "拖入OCR"), self.tabs)
+        self._cap_btn.setProperty("kind", "corner")
+        self._cap_btn.setCheckable(True)
+        self._cap_btn.setCursor(Qt.PointingHandCursor)
+        self._cap_btn.setStyleSheet("""
+            padding: 1px 8px; font-size: 11px; border-radius: 5px;
+        """)
+        self._cap_btn.setToolTip(
+            T("hist.tab_drop_ocr_tip", "拖入图片后自动 OCR：开=蓝 关=灰"))
+        on = self._cfg.getbool("software", "drop_ocr_auto", True) \
+            if self._cfg else False
+        self._cap_btn.setChecked(on)
+        self._cap_btn.toggled.connect(self._on_drop_ocr_auto_toggled)
+        self._cap_btn.raise_()
+        # 等布局稳定后再定位（首次 show 可能尚未计算 tabRect），缩放时随动
+        QTimer.singleShot(0, self._layout_drop_ocr_btn)
 
         # 右键菜单 + 多选（Ctrl 跨选 / Shift 连选，原生 ExtendedSelection）
         for _lst in (self.list_all, self.list_no_text, self.list_has_text,
@@ -416,6 +444,39 @@ class HistoryPanel(CardWindow):
         super().resizeEvent(e)
         if getattr(self, "_handles", None):
             self._layout_handles()
+        self._layout_drop_ocr_btn()
+
+    def _layout_drop_ocr_btn(self):
+        """把「拖入OCR」开关定位到标签栏最右端、并与标签文字垂直居中对齐。
+
+        垂直以最后一项 tabRect 中心为准（不依赖整个标签栏高度）；
+        布局未就绪时静默返回，等 resizeEvent/延时再算。
+        """
+        if getattr(self, "_cap_btn", None) is None or getattr(self, "tabs", None) is None:
+            return
+        tb = self.tabs.tabBar()
+        last = self.tabs.count() - 1
+        if last < 0:
+            return
+        try:
+            r = tb.tabRect(last)
+        except Exception:              # noqa: BLE001 布局未就绪
+            return
+        if r.width() <= 0:
+            return
+        x = self.tabs.width() - self._cap_btn.width() - 8   # 贴标签栏最右端
+        y = tb.pos().y() + r.center().y() - self._cap_btn.height() // 2
+        if x != self._cap_btn.x() or y != self._cap_btn.y():
+            self._cap_btn.move(x, y)
+            self._cap_btn.raise_()
+
+    def _on_drop_ocr_auto_toggled(self, checked: bool):
+        """拖入图片后自动 OCR 开关：写入 [software] drop_ocr_auto。"""
+        if self._cfg is None:
+            return
+        self._cfg.cp.set("software", "drop_ocr_auto",
+                         "true" if checked else "false")
+        self._cfg.save()
 
     def closeEvent(self, e):
         # 记忆最终尺寸到 config.ini（仅隐藏也会触发 closeEvent）
@@ -448,13 +509,64 @@ class HistoryPanel(CardWindow):
             return False
         return any(isinstance(b, dict) and b.get("kind") == "qr" for b in data)
 
+    # 缩略图缓存上限（条数）。reload 会为 6 个 Tab 各建一次行，同一张缩略图
+    # 在一次刷新中至少被请求 6 次，缓存收益显著。
+    _THUMB_CACHE_MAX = 400
+
+    def _cached_thumb(self, path, size) -> QPixmap:
+        """缩略图缓存（键 = 路径 + mtime + 目标尺寸），未命中则加载缩放后存入。
+
+        原先每次 rebuild 都从磁盘重新读取 + 解码 + 缩放同一张缩略图：
+        6 个 Tab 的全量刷新把磁盘 IO 与解码放大 6 倍以上（HEIC/AVIF 还要走
+        cv2 + Pillow 回退）。mtime 入键保证文件被覆盖后缓存自动失效。
+        """
+        try:
+            st = path.stat()
+        except OSError:
+            return QPixmap()
+        key = (str(path), st.st_mtime_ns, size.width(), size.height())
+        cache = self._thumb_cache
+        pm = cache.pop(key, None)
+        if pm is not None:
+            cache[key] = pm          # 重新插入 = 标记为最近使用（LRU 顺序）
+            return pm
+        pm = _load_pixmap(path)
+        if not pm.isNull():
+            pm = pm.scaled(size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        if len(cache) >= self._THUMB_CACHE_MAX:
+            cache.pop(next(iter(cache)), None)   # 淘汰最久未用
+        cache[key] = pm
+        return pm
+
+    def _list_limit(self) -> int:
+        """列表/搜索上限：与「历史保留条数」联动（保底 200）。
+
+        原先硬编码 200：设置允许保留最多 3000 条，但超过 200 条后更旧的
+        记录在面板里永远不可见、也搜不到，与「历史保留条数」的产品承诺
+        直接矛盾。
+        """
+        if self._cfg is not None:
+            try:
+                return max(200, self._cfg.getint(
+                    "software", "history_max_count", 200))
+            except Exception:  # noqa: BLE001 配置异常回退默认
+                pass
+        return 200
+
     def reload(self):
+        # 批量操作进行中：抑制中间态刷新，由调用方在批末统一刷一次。
+        # 原先批量收藏 N 条会经回调触发 N 次全量 reload（每次 7 条 SQL +
+        # 6 个列表重建 + 缩略图加载），几十条即卡顿数秒。
+        if self._batch_depth > 0:
+            self._batch_dirty = True
+            return
         keyword = self.search.text().strip()
+        limit = self._list_limit()
         # 全部 Tab
         if keyword:
-            records_all = self._history.search(keyword)
+            records_all = self._history.search(keyword, limit)
         else:
-            records_all = self._history.list(200)
+            records_all = self._history.list(limit)
         self._build(records_all, self.list_all, T("hist.empty_all", "暂无历史记录"))
         # 筛选 Tab（在 records_all 基础上按 文字/标注 过滤，与搜索关键词叠加）
         self._build([r for r in records_all if not self._has_text(r)],
@@ -466,8 +578,11 @@ class HistoryPanel(CardWindow):
         self._build([r for r in records_all if self._has_anno(r)],
                     self.list_has_anno, T("hist.empty_has_anno", "暂无有标注记录"))
         # 收藏 Tab（关键词走 search_favorites：文字/标注/模型/时间 与全部 Tab 同源）
-        records_fav = self._history.search_favorites(keyword)
+        records_fav = self._history.search_favorites(keyword, limit)
         self._build(records_fav, self.list_fav, T("hist.empty_fav", "暂无收藏"))
+        # 列表已重建（行 widget 全新、selected 属性复位）：清掉选中缓存，
+        # 否则下次选中变化的差集会与陈旧状态比对而漏刷高亮
+        self._last_sel.clear()
 
     # ---- 拖放：拖图片进窗口 → 复制入库 + 后台 OCR ----
     @staticmethod
@@ -511,7 +626,6 @@ class HistoryPanel(CardWindow):
             try:
                 self._on_files_dropped(uniq)
             except Exception as e:  # noqa: BLE001 拖放失败不阻断 UI
-                log = None
                 try:
                     from core_engine.logging_setup import get_logger
                     get_logger("history").exception("拖放图片处理失败: %s", e)
@@ -574,7 +688,6 @@ class HistoryPanel(CardWindow):
         lay.setSpacing(10)
 
         thumb = _DragImageLabel(
-            str(self._thumb_dir.parent / Path(r["screenshot_path"]).name),
             rid=r["id"], panel=self, lst=lst)
         thumb.setProperty("kind", "thumb")
         thumb.setFixedSize(self._thumb_width, int(self._thumb_width * 0.7))
@@ -582,10 +695,8 @@ class HistoryPanel(CardWindow):
         thumb.setToolTip(T("hist.drag_out_tip",
                            "拖拽图片到桌面 / 微信 / QQ / WorkBuddy 等发送"))
         p = self._thumb_dir / Path(r["screenshot_path"]).name
-        pm = _load_pixmap(p) if p.exists() else QPixmap()
+        pm = self._cached_thumb(p, thumb.size())
         if not pm.isNull():
-            pm = pm.scaled(thumb.size(), Qt.KeepAspectRatio,
-                           Qt.SmoothTransformation)
             thumb.setPixmap(pm)
         else:
             thumb.setText(T("hist.no_img", "无图"))
@@ -663,16 +774,55 @@ class HistoryPanel(CardWindow):
                 out.append(rid)
         return out
 
+    @contextlib.contextmanager
+    def _batch(self):
+        """批量操作上下文：期间 reload() 被抑制（只标记脏），退出时统一刷一次。
+
+        用于「批量收藏」这类会经回调反向触发全量 reload 的场景，避免
+        N 次重建（SQL + 6 个列表 + 缩略图）造成的卡顿。
+        """
+        self._batch_depth += 1
+        try:
+            yield self
+        finally:
+            self._batch_depth -= 1
+            if self._batch_depth == 0 and self._batch_dirty:
+                self._batch_dirty = False
+                self.reload()
+
     def _sync_selection_style(self, lst: QListWidget):
-        """选中变化后，按 item.isSelected() 同步行 widget 的 selected 属性，
-        驱动 #row[selected="true"] 高亮（暗/亮主题均已加规则）。"""
+        """选中变化后，同步行 widget 的 selected 属性以驱动高亮样式。
+
+        只更新**选中状态发生变化的行**（原先每次选中变化都遍历全部行并
+        unpolish/polish，大列表下选择拖影、reload 期间 O(N²) 样式重算）。
+        """
+        prev = self._last_sel.get(id(lst), set())
+        cur = set()
+        for it in lst.selectedItems():
+            rid = it.data(Qt.UserRole)
+            if rid is not None:
+                cur.add(rid)
+        # 取消选中：清掉选中标记
         for i in range(lst.count()):
             it = lst.item(i)
+            rid = it.data(Qt.UserRole)
+            if rid in cur or rid not in prev:
+                continue
             w = lst.itemWidget(it)
             if w is not None and hasattr(w, "setProperty"):
-                w.setProperty("selected", bool(it is not None and it.isSelected()))
-                w.style().unpolish(w)
-                w.style().polish(w)
+                self._set_row_selected(w, False)
+        # 新选中：打上标记
+        for it in lst.selectedItems():
+            w = lst.itemWidget(it)
+            if w is not None and hasattr(w, "setProperty"):
+                self._set_row_selected(w, True)
+        self._last_sel[id(lst)] = cur
+
+    @staticmethod
+    def _set_row_selected(w, on: bool):
+        w.setProperty("selected", on)
+        w.style().unpolish(w)
+        w.style().polish(w)
 
     # ---- 右键菜单：单条 / 批量 派发 ----
     def _on_context_menu(self, lst: QListWidget, pos: QPoint):
@@ -879,23 +1029,53 @@ class HistoryPanel(CardWindow):
 
     def _toggle_fav(self, rid, fav: bool):
         self._history.set_favorite(rid, fav)
-        # 通知外部（App）：同步贴图窗口状态栏星标等
-        if self._on_favorite_changed is not None:
-            self._on_favorite_changed(rid, fav)
+        # 通知外部（App）：同步贴图窗口状态栏星标等。抑制该回调触发的全量
+        # reload——本方法下方就地更新各列表（O(1) 行），再整表刷新是浪费。
+        with self._batch():
+            if self._on_favorite_changed is not None:
+                self._on_favorite_changed(rid, fav)
         # 各列表（全部/无文字/有文字/条码/有标注）：**不重新排序**，只更新星号与提示
         for lst in (self.list_all, self.list_no_text,
                     self.list_has_text, self.list_has_qr, self.list_has_anno):
             self._update_fav_in_list(lst, rid, fav)
         # 「收藏」列表：随状态刷新（收藏→加入，取消→移除）；关键词生效时用同源搜索
-        records_fav = self._history.search_favorites(self.search.text().strip())
+        records_fav = self._history.search_favorites(self.search.text().strip(),
+                                                     self._list_limit())
         self._build(records_fav, self.list_fav, T("hist.empty_fav", "暂无收藏"))
 
+    def _confirm_delete(self, rids) -> bool:
+        """删除确认 —— 单条与批量**共用**的唯一入口，返回 True 表示可以删。
+
+        原策略倒挂：批量删除有确认，单条（卡片删除按钮 / 右键「删除」/ 选中一条
+        按 Del）直接物理删除 DB 记录与磁盘截图文件，不可恢复。确认收敛到
+        本方法后，所有删除入口都先过这里；条数决定文案（≥2 用批量文案）。
+        调用方不应再各自弹确认（避免二次确认）。
+        """
+        from ui.base.theme_dialog import ThemeDialog
+        if len(rids) >= 2:
+            text = T("hist.del_confirm",
+                     "确定删除选中的 {} 项吗？\n"
+                     "（对应的截图文件将一并删除，不可恢复）").format(len(rids))
+        else:
+            text = T("hist.del_one_confirm",
+                     "确定删除这条记录吗？\n"
+                     "（对应的截图文件将一并删除，不可恢复）")
+        return ThemeDialog.question(self, T("hist.del_title", "删除确认"), text)
+
     def _delete(self, rid):
+        """删除单条记录（卡片删除按钮 / 右键菜单入口）：先确认再删。"""
+        if not self._confirm_delete([rid]):
+            return
         self._history.delete(rid)
         self.reload()
 
     # ---- 批量操作（选区 ≥ 2 时由 _bulk_menu / 快捷键调用）----
     def _bulk_delete(self, rids):
+        # 批量删除不可恢复（DB 记录 + 磁盘截图文件一并删除），而 Del 键
+        # 极易误触（多选状态焦点落在列表时）——确认走与单条共用的
+        # _confirm_delete（只选中一条时按单条文案提示，同样需要确认）。
+        if not self._confirm_delete(rids):
+            return
         for rid in rids:
             self._history.delete(rid)
         self.reload()                       # 重建列表，选区自然清空
@@ -903,13 +1083,19 @@ class HistoryPanel(CardWindow):
 
     def _bulk_fav_toggle(self, rids):
         recs = [self._history.get(r) for r in rids]
-        all_fav = all(bool(x.get("is_favorite")) for x in recs if x)
+        # 先过滤已不存在的记录再判定目标态：全为 None 时 all() 为 True，
+        # 会误判成「全部已收藏」并对已删除的 id 执行无效 UPDATE
+        alive = [x for x in recs if x]
+        all_fav = all(bool(x.get("is_favorite")) for x in alive) if alive else False
         target = not all_fav               # 有未收藏则统一收藏，否则统一取消
-        for rid in rids:
-            self._history.set_favorite(rid, target)
-            if self._on_favorite_changed is not None:
-                self._on_favorite_changed(rid, target)
-        self.reload()
+        # 批内抑制 reload：回调（App._sync_favorite）原本逐条触发全量 reload，
+        # N 条选中即 N 次「7 条 SQL + 6 个列表重建 + 缩略图加载」，卡顿数秒。
+        with self._batch():
+            for rid in rids:
+                self._history.set_favorite(rid, target)
+                if self._on_favorite_changed is not None:
+                    self._on_favorite_changed(rid, target)   # 仅同步星标
+        self.reload()                      # 批末统一刷新一次
         self._toast(T("hist.bulk_faved", "已%s %d 项")
                     % ("收藏" if target else "取消收藏", len(rids)))
 

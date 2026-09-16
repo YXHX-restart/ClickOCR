@@ -87,6 +87,11 @@ class StatusStrip(CardWindow):
 
     def __init__(self, parent=None):
         super().__init__(title=None, with_close=False)
+        # 位置完全由 ResultOverlay._sync_status_strip_pos() 决定，关掉 CardWindow
+        # 的「首次显示自动居中」。否则跨屏截图时鼠标终点会落在 Qt 逻辑空间的屏间
+        # 缝隙里，自动居中因取不到屏而退回**主屏并居中**——表现为
+        # 「跨屏框选后图片（连状态栏一起）弹到主屏中间、尺寸不变」。
+        self._centered = True
         self.setObjectName("StatusStrip")
         self.setMinimumWidth(240)
         self.setMaximumWidth(1400)   # 状态栏最大宽度限制
@@ -160,6 +165,17 @@ class StatusStrip(CardWindow):
         self._sc_esc.activated.connect(self.esc_pressed.emit)
 
         self._user_width = None           # 用户拖拽设定的宽度（None=跟随图片）
+
+        # 主题切换 → 刷新三个 SVG 图标（apply_theme 只清缓存，已挂按钮上的
+        # 旧色 QIcon 不会自动替换；弱引用订阅，销毁后自动失效）
+        from ui.base.theme import on_theme_changed
+        on_theme_changed(self._on_theme_refresh)
+
+    def _on_theme_refresh(self, _theme):
+        """主题变更：按当前按钮状态重建链锁/导航图/等比例图标。"""
+        self._sync_lock_icon(self.btn_lock.isChecked())
+        self._sync_nav_icon(self.btn_nav.isChecked())
+        self._sync_ratio_icon(self.btn_ratio.isChecked())
 
     # ---- 接口 ----
     def attach_overlay(self, overlay):

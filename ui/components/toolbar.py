@@ -24,6 +24,8 @@ from platform_compat.fonts import ui_font_family
 
 from ui.base.card_window import CardWindow
 from ui.base.texts import T
+from ui.base.widgets import screen_available_geometry
+from ui.core.anno_core import (MOSAIC_MODES, num_style_ids, tool_style_ids)
 
 
 class _TableBtn(QPushButton):
@@ -47,7 +49,15 @@ class _TableBtn(QPushButton):
         self._long_timer.timeout.connect(self._fire_long)
         self._click_timer = QTimer(self)
         self._click_timer.setSingleShot(True)
-        self._click_timer.setInterval(250)
+        # 单击判定间隔取系统双击间隔（约 500ms）：原先硬编码 250ms 小于系统
+        # 值，250-500ms 之间的慢双击会先误触发单击切换表格模式、随后双击
+        # 又打开表格窗口（模式被意外切换 + 开窗同时发生）
+        try:
+            from PySide6.QtWidgets import QApplication as _QA
+            _dci = int(_QA.doubleClickInterval())
+        except Exception:            # noqa: BLE001 无实例/异常时用常见默认
+            _dci = 500
+        self._click_timer.setInterval(max(250, _dci))
         self._click_timer.timeout.connect(self._do_click)
         self._fired_long = False
         self._pending_click = False
@@ -168,6 +178,7 @@ class _ToolsPack(QWidget):
 
         # ---- 撤销 / 重做 / 清空 ----
         lay.addSpacing(6)
+        self._icon_btns = []   # (button, icon_name)：主题切换时统一刷新
         for icon_name, tip_key, sig in (
                 ("undo", "toolbar.undo", self.undo_requested),
                 ("redo", "toolbar.redo", self.redo_requested),
@@ -176,6 +187,7 @@ class _ToolsPack(QWidget):
             if icon_name is not None:
                 b.setIcon(svg_icon(icon_name, color=icon_color(), size=18))
                 b.setFixedSize(24, 24)     # 图标钮与工具按钮同尺寸
+                self._icon_btns.append((b, icon_name))
             else:
                 b.setFixedHeight(24)
             b.setToolTip(T(tip_key, {"toolbar.undo": "撤销 (Ctrl+Z)",
@@ -183,6 +195,22 @@ class _ToolsPack(QWidget):
                                      "toolbar.clear": "清空全部标注"}[tip_key]))
             b.clicked.connect(sig.emit)
             lay.addWidget(b)
+
+        # 主题切换 → 刷新全部工具图标（apply_theme 只清缓存，已挂按钮上的
+        # 旧色 QIcon 不会自动替换；弱引用订阅，销毁后自动失效）
+        from ui.base.theme import on_theme_changed
+        on_theme_changed(self._on_theme_refresh)
+
+    def _on_theme_refresh(self, _theme):
+        """主题变更：按新主题色重建工具按钮与撤销/重做图标。"""
+        from ui.base.icon import icon as svg_icon
+        from ui.base.theme import icon_color
+        self._refresh_tool_icons()
+        for b, name in getattr(self, "_icon_btns", []):
+            try:
+                b.setIcon(svg_icon(name, color=icon_color(), size=18))
+            except Exception:  # noqa: BLE001
+                pass
 
     def _refresh_tool_icon(self, b: QPushButton):
         """单工具按钮图标着色：未选中 = 主题色；选中（蓝底）= 白色。"""
@@ -231,22 +259,21 @@ class _ToolsPack(QWidget):
             self.text_bold = bool(text_bold)
         if text_italic is not None:
             self.text_italic = bool(text_italic)
-        if mosaic_mode in ("pen", "rect", "textbox"):
+        if mosaic_mode in MOSAIC_MODES:
             self.mosaic_mode = mosaic_mode
         if num_start is not None:
             self.num_start = max(0, min(9999, int(num_start)))
         if num_size is not None:
             self.num_size = max(8, min(64, int(num_size)))
-        if num_style in ("circle", "circle_o", "square", "paren", "plain"):
+        if num_style in num_style_ids():
             self.num_style = num_style
-        if rect_style in ("rect", "filled", "round"):
-            self.tool_styles["rect"] = rect_style
-        if arrow_style in ("single", "double", "dash"):
-            self.tool_styles["arrow"] = arrow_style
-        if line_style in ("solid", "dash", "dot"):
-            self.tool_styles["line"] = line_style
-        if pen_style in ("solid", "highlight", "dash"):
-            self.tool_styles["pen"] = pen_style
+        # 样式白名单直接读唯一来源 anno_core.TOOL_STYLES（原先此处硬编码各 3
+        # 种的缩水名单，实际各 7 种——ellipse/elbow/wavy/glow 等 16 种样式
+        # 重启后被静默回退默认，「参数永久化记录」对它们失效）
+        for _tool, _val in (("rect", rect_style), ("arrow", arrow_style),
+                            ("line", line_style), ("pen", pen_style)):
+            if _val in tool_style_ids(_tool):
+                self.tool_styles[_tool] = _val
 
     def set_tool_state(self, tool: str):
         """外部设置当前工具（如会话恢复），同步按钮高亮。"""
@@ -341,8 +368,9 @@ class _ToolsPack(QWidget):
     def _place_popup(self, popup, tool: str):
         """把子选项浮层定位到对应工具按钮正下方。"""
         from ui.components.annotation import TOOLS
-        from PySide6.QtWidgets import QApplication as _QA
-        scr = _QA.primaryScreen().availableGeometry()
+        # 用本工具栏所在屏的可用区：工具栏在副屏时按主屏夹取会把浮层
+        # 强行拉回主屏边缘（甚至跑到另一块屏上）
+        scr = screen_available_geometry(self)
         popup.resize(popup.sizeHint())
         pw = popup.width()
         ph = popup.height()
@@ -480,6 +508,10 @@ class ToolBar(CardWindow):
 
     def __init__(self, parent=None):
         super().__init__(title=None, with_close=False)
+        # 位置完全由 ResultOverlay._sync_toolbar_pos() 决定，关掉 CardWindow 的
+        # 「首次显示自动居中」：跨屏截图时鼠标终点落在 Qt 逻辑空间的屏间缝隙里，
+        # 自动居中会因取不到屏而退回**主屏并居中**（见 status_strip 同处注释）。
+        self._centered = True
         self.setObjectName("ToolBar")
         self._overlay = None
         # CardWindow 的 card_lay 是垂直布局；PySide6 下 setLayout 无法替换已挂布局
@@ -577,6 +609,20 @@ class ToolBar(CardWindow):
 
         # 标注态默认收起；宿主要展开时调 set_anno_mode(True)
         self._anno_mode_visible = False
+
+        # 主题切换 → 钉图/收藏图标（金色强调色随主题变化）
+        from ui.base.theme import on_theme_changed
+        on_theme_changed(self._on_theme_refresh)
+
+    def _on_theme_refresh(self, _theme):
+        """主题变更：按新强调色重建钉图/收藏图标。"""
+        from ui.base.icon import icon as svg_icon
+        from ui.base.theme import accent_color
+        try:
+            self.btn_pin.setIcon(svg_icon("pin", color=accent_color(), size=18))
+            self.btn_fav.setIcon(svg_icon("star", color=accent_color(), size=18))
+        except Exception:  # noqa: BLE001
+            pass
 
     # ---- 接口 ----
     def attach_overlay(self, overlay):

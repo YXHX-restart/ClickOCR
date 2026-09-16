@@ -8,13 +8,104 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QRect
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QGridLayout,
                                QSpinBox, QPushButton, QAbstractSpinBox,
-                               QLineEdit, QComboBox)
+                               QLineEdit, QComboBox, QApplication)
 
 from ui.base.card_window import CardWindow
+
+
+def screen_for_point(point) -> object:
+    """取包含该点的屏幕；点落在屏幕之间的「逻辑缝隙」里时取**最近的**屏。
+
+    为什么不能「取不到就退回主屏」：
+    Qt 的逻辑虚拟桌面在**不同分辨率 + 相同缩放**的机器上会出现**不属于任何屏**
+    的缝隙。实测布局（dlg 1.5）：主屏逻辑 (0,0,2560,1440)、副屏逻辑
+    (3840,720,1707,960) —— 主屏逻辑宽度只有 2560，副屏逻辑原点却是 3840，
+    于是 **2560~3840 无人认领**（物理上两屏是相邻的，这纯粹是 Qt 缩放逻辑的
+    产物）。`QGuiApplication.screenAt()` 对缝里的点返回 None。
+
+    而跨屏框选时，鼠标终点与窗口中心恰好会落进这条缝 —— 退回主屏就会把窗口
+    从副屏硬拽到主屏（表现为「图片弹回主屏并居中 / 尺寸不变」）。
+    按距离取最近的屏，行为才是连续的。
+
+    返回 QScreen，取不到任何屏时返回 None。
+    """
+    if point is not None:
+        try:
+            scr = QApplication.screenAt(point)
+        except Exception:                # noqa: BLE001
+            scr = None
+        if scr is not None:
+            return scr
+    try:
+        screens = [s for s in QApplication.screens() if s is not None]
+    except Exception:                    # noqa: BLE001
+        screens = []
+    if not screens:
+        return QApplication.primaryScreen()
+    if point is None:
+        return QApplication.primaryScreen() or screens[0]
+    # 到各屏矩形的最短边距（比较平方，避免开方）；相等时保留先出现的
+    best, best_d = screens[0], None
+    for s in screens:
+        r = s.geometry()
+        dx = max(r.left() - point.x(), 0, point.x() - r.right())
+        dy = max(r.top() - point.y(), 0, point.y() - r.bottom())
+        d = dx * dx + dy * dy
+        if best_d is None or d < best_d:
+            best, best_d = s, d
+    return best
+
+
+def desktop_union_available() -> QRect:
+    """所有屏可用区域的并集（整个虚拟桌面）。取不到屏时返回空 QRect。
+
+    用途：给「跟随主窗、可能横跨多屏」的附属浮窗做夹取。
+    这类浮窗不能按**单块屏**夹取——跨屏截图时，主窗横跨两屏，而按单屏夹取会把
+    附属浮窗整个拽到那一块屏上（实测：状态栏/工具栏被拉回主屏）。
+    夹到并集既保证不出屏，又不会跨屏拽动。
+
+    注意：**不要**用 QRect() 起手。QRect() 是 (0,0,-1,-1)，它不是 isNull()
+    （宽高非 0）而是 isEmpty()，united() 会保留其原点，导致并集原点被错误拉成
+    (0,0)（副屏挂在左侧/上方时就会算错）。
+    """
+    try:
+        screens = [s for s in QApplication.screens() if s is not None]
+    except Exception:                    # noqa: BLE001
+        screens = []
+    if not screens:
+        return QRect()
+    u = QRect(screens[0].availableGeometry())
+    for s in screens[1:]:
+        u = u.united(s.availableGeometry())
+    return u
+
+
+def screen_available_geometry(widget) -> QRect:
+    """widget 当前所在屏幕的可用区域（多显示器下切勿用 primaryScreen 夹取）。
+
+    副屏窗口按主屏 availableGeometry 夹取会被强行拉回主屏边界，
+    甚至算出负宽度（`scr.right() - x + 1` 为负）。取不到时按**最近屏**判定，
+    再不济才回退主屏；两者都取不到返回空 QRect，调用方需自行判空。
+    """
+    scr = None
+    try:
+        scr = widget.screen()            # Qt 6.4+：控件所在屏
+    except Exception:                    # noqa: BLE001
+        scr = None
+    if scr is None:
+        try:
+            scr = screen_for_point(widget.frameGeometry().center())
+        except Exception:                # noqa: BLE001
+            scr = None
+    if scr is None:
+        scr = QApplication.primaryScreen()
+    if scr is None:
+        return QRect()
+    return scr.availableGeometry()
 
 
 class FitComboBox(QComboBox):
@@ -168,9 +259,9 @@ class ColorButton(QPushButton):
         self._picker.show()
         self._picker.raise_()
         self._picker._centered = True    # 阻止 CardWindow 默认居中
-        # 锚定在按钮上方居中（空间不足则放按钮下方）
-        from PySide6.QtWidgets import QApplication
-        scr = QApplication.primaryScreen().availableGeometry()
+        # 锚定在按钮上方居中（空间不足则放按钮下方）；取色器随按钮所在屏
+        # 夹取——原先固定主屏会让副屏上的取色器跳到主屏边缘
+        scr = screen_available_geometry(self)
         gw = self._picker.width()
         gh = self._picker.height()
         g = self.mapToGlobal(self.rect().topLeft())

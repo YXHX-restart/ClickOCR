@@ -27,6 +27,7 @@ class FloatGroup(QObject):
         self._members: list = []        # [(widget, follow_cb|None)]
         self._hidden: dict = {}         # widget -> geometry（让位隐藏时记录）
         self._yield = False             # 是否允许让位（标注模式下开启）
+        self._follow_warned: set = set()  # 已报过跟随失败的成员（id()），避免每帧刷屏
 
     # ---- 注册 ----
     def add(self, widget, follow=None):
@@ -55,13 +56,23 @@ class FloatGroup(QObject):
 
     # ---- 位置跟随 ----
     def follow(self):
-        """主窗 move/resize 后重排附属窗（执行各成员的 follow 回调）。"""
+        """主窗 move/resize 后重排附属窗（执行各成员的 follow 回调）。
+
+        回调异常不外抛（一次布局失败不该打断 move/resize 事件链），但**必须留痕**：
+        静默 `pass` 会让「附属浮窗不跟随」这类故障完全无声，只能靠肉眼发现。
+        每个成员只报一次 —— follow 在拖动窗口时每帧都会跑，不加限制会刷屏。
+        """
         for w, cb in self._members:
             if w is not None and cb is not None:
                 try:
                     cb()
-                except Exception:        # noqa: BLE001
-                    pass
+                except Exception as e:        # noqa: BLE001
+                    key = id(w)
+                    if key not in self._follow_warned:
+                        self._follow_warned.add(key)
+                        from core_engine.logging_setup import get_logger
+                        get_logger("float_group").warning(
+                            "附属浮窗跟随回调失败（同一成员后续不再重复报告）：%s", e)
 
     # ---- 绘制让位（替代 80ms 轮询）----
     def set_yield_enabled(self, on: bool):

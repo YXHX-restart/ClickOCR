@@ -236,15 +236,65 @@ class ConfigManager:
             self.path = self._data_root / "config.ini"
             self._path_explicit = False
         self._default_cfg = self._res_root / "resources" / "config.ini"
-        # 支持行内注释（# / ;），如 "border_color = 100,190,255   # 浅蓝"
-        self.cp = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+        # 支持行内注释（# / ;），如 "border_color = 100,190,255   # 浅蓝"。
+        # interpolation=None：本项目所有值都是原样字符串，默认的
+        # BasicInterpolation 下含单个 % 的值（如手改的 name_pattern = shot_%d）
+        # 会让 cp.read() 抛 InterpolationSyntaxError → 启动即崩溃
+        self.cp = configparser.ConfigParser(
+            inline_comment_prefixes=("#", ";"), interpolation=None)
+        self._load_source = None   # 本次实际加载的文件（save 写回同一来源）
         self._load()
 
+    def _seed_from_template(self) -> None:
+        """首次运行：把出厂模板复制到可写位置，作为本次及以后的配置来源。
+
+        「资源只读、数据分离」：`resources/config.ini` 是**出厂模板**（只读资源），
+        用户配置放可写的数据目录。复制而不是直接读模板，是为了让 save() 写回
+        数据目录 —— 否则 dev 模式下用户设置会被写进仓库、打包时又被带进发布包。
+
+        复制失败（只读介质 / 无权限）时退回**只读**加载模板，保证仍能启动。
+        """
+        import shutil
+
+        from core_engine.logging_setup import get_logger
+
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(self._default_cfg, self.path)
+            self.cp.read(self.path, encoding="utf-8")
+            self._load_source = self.path
+            get_logger("config").info(
+                "首次运行：已由出厂模板生成用户配置 %s（此后改动只写这里）",
+                self.path)
+        except OSError as e:                # noqa: BLE001  只读介质等
+            get_logger("config").warning(
+                "无法生成用户配置（%s），本次以只读方式加载出厂模板", e)
+            self.cp.read(self._default_cfg, encoding="utf-8")
+            self._load_source = self._default_cfg
+
     def _load(self):
+        # 记住实际加载来源：save() 必须写回同一文件，否则「读 A 写 B」会让
+        # 用户的所有修改重启后全部回退（dev 模式下 app_root/config.ini 存在
+        # 时曾踩此洞：load 读它、save 却固定写 resources/config.ini）
         if self.path.exists():
             self.cp.read(self.path, encoding="utf-8")
+            self._load_source = self.path
+        elif self._default_cfg.exists() and self._default_cfg != self.path:
+            # 首次运行：把出厂模板**复制**到可写位置再读写。
+            # 绝不能把 resources/config.ini 本身当配置读写 —— 那是只读资源目录：
+            #   · dev 模式下会把用户的实时配置写进仓库（含个人偏好、机器探测结果）
+            #   · 打包时又把这些个人配置打进发布包（典型后果：发布包带着
+            #     ocr_device=cuda，纯 CPU 机器每次启动都白走一轮 CUDA 探测）
+            self._seed_from_template()
         elif self._default_cfg.exists():
             self.cp.read(self._default_cfg, encoding="utf-8")
+            self._load_source = self._default_cfg
+        # 兼容旧版转义：interpolation 开启时 configparser 落盘会把值中的 %
+        # 转义成 %%；关闭插值后原样读出 %%，这里还原成 %（与旧读取语义一致）
+        for _sec in self.cp.sections():
+            for _k, _v in self.cp.items(_sec):
+                if "%%" in _v:
+                    self.cp.set(_sec, _k, _v.replace("%%", "%"))
         # 旧结构（v0.13 及以前）→ 新结构迁移：搬值后清空旧 section
         removed = set()
         for (old_sec, old_key), (new_sec, new_key) in _LEGACY_MAP.items():
@@ -295,14 +345,16 @@ class ConfigManager:
     def save(self):
         """写回配置文件，位置跟随运行方式：
         - 显式指定 path（测试/自定义）：写回该 path；
-        - 开发（data_root == res_root）：写回 resources/config.ini（与加载来源一致）；
-        - 打包（frozen）：_internal 只读，写 exe 旁 config.ini（data_root）。"""
+        - 打包（frozen）且内容来自只读的 _internal 默认配置：写 exe 旁
+          config.ini（data_root）；
+        - 其余：写回本次实际加载的来源文件（读哪写哪，不再漂移）。"""
         if self._path_explicit:
             target = self.path
-        elif self._data_root == self._res_root:
-            target = self._default_cfg
-        else:
+        elif getattr(sys, "frozen", False) \
+                and self._load_source == self._default_cfg:
             target = self.path
+        else:
+            target = self._load_source or self.path
         target.parent.mkdir(parents=True, exist_ok=True)
         with open(target, "w", encoding="utf-8") as f:
             self.cp.write(f)

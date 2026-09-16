@@ -15,14 +15,21 @@ import io
 
 import numpy as np
 
+from core_engine.logging_setup import get_logger
+
+log = get_logger("app")
+
 #: 必须走 Pillow 的格式（cv2 不支持编码）
 PILLOW_FORMATS = ("heic", "heif", "avif")
 
 
 def pillow_encode(img: np.ndarray, fmt: str, quality: int = 90) -> bytes | None:
-    """BGR ndarray → 图片字节。依赖缺失 / 编码失败返回 None（调用方跳过并记日志）。
+    """BGR ndarray → 图片字节。依赖缺失 / 编码失败返回 None。
 
     fmt: heic / heif / avif；quality: 1-100（有损质量）。
+    「无 pillow_heif」是预期内的能力缺失，静默返回 None；**其余编码失败必须留痕**
+    （裸 `except: return None` 会让「换了个格式就存不下来」变成无迹可查）。
+    调用方仍需处理 None（跳过该帧 / 回退格式）。
     """
     try:
         from PIL import Image
@@ -37,5 +44,7 @@ def pillow_encode(img: np.ndarray, fmt: str, quality: int = 90) -> bytes | None:
                  format=("HEIF" if fmt in ("heic", "heif") else "AVIF"),
                  quality=max(1, min(100, int(quality))))
         return out.getvalue()
-    except Exception:                       # noqa: BLE001 编码失败不炸调用方
+    except Exception as e:                  # noqa: BLE001 编码失败不炸调用方
+        log.warning("Pillow 编码 %s 失败（返回 None，调用方需回退/跳过）：%s",
+                    fmt, e, exc_info=True)
         return None

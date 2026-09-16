@@ -81,14 +81,19 @@ def decode_image_bytes(data) -> "np.ndarray | None":
     """图片字节 → BGR ndarray（与 cv2.imdecode 输出一致），失败返回 None。
 
     先走 cv2.imdecode（常规格式最快）；失败再回退 Pillow 覆盖 AVIF / HEIC。
+
+    「失败返回 None」是硬契约（调用方按 None 跳过，不做异常处理）：因此
+    **整个解码入口都在 try 之内**——缓冲转换（None / str / 非法类型）、
+    cv2.imdecode（损坏字节、误传 float ndarray）、Pillow 回退任意一步抛错，
+    统一在此收敛为 None，不允许漏给调用方。
     """
     if cv2 is None:                                     # pragma: no cover
         return None
-    buf = _as_buffer(data)
-    img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
-    if img is not None:
-        return img
     try:
+        buf = _as_buffer(data)
+        img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+        if img is not None:
+            return img
         from PIL import Image, ImageOps
         import io as _io
         register_heif_opener()

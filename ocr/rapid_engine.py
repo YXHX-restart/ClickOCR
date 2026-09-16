@@ -2,7 +2,10 @@
 
 支持三档 v6 离线模型集（按 config [software] ocr_model 选择）：
 - v6-tiny（默认）：统一 `rapidocr` 包（>=3.9.2，OCRVersion.PPOCRV6）
-  + PP-OCRv6 tiny ONNX（resources/models_v6/，ModelScope 官方导出，SHA256 校验）。
+  + PP-OCRv6 tiny ONNX（resources/models_v6/，ModelScope 官方导出）。
+  完整性按 `resources/PP-OCRv6_models_manifest.txt` 校验 SHA256（见 verify_models），
+  **不阻断启动**：不匹配只记日志，避免模型被替换/下载不完整时表现为「识别结果
+  诡异」而无人察觉。
 - v6-small：PP-OCRv6 small ONNX + 通用字典 ppocrv6_dict.txt。
 - v6-medium：PP-OCRv6 medium ONNX + 通用字典 ppocrv6_dict.txt。
   v6 无独立 cls 模型，强制 use_cls=False；三档可在运行期 switch_model 热切换
@@ -13,12 +16,14 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
 import numpy as np
 
 from core_engine.ai_pipeline import OcrBox
+from core_engine.logging_setup import get_logger
 
 # 统一包（PP-OCRv6 支持）：rapidocr 3.9.x（旧 PP-OCRv3 回退已移除）
 try:
@@ -31,6 +36,81 @@ except Exception:  # pragma: no cover - 依赖缺失
 
 _RES = Path(__file__).resolve().parent.parent / "resources"
 _DIR_V6 = _RES / "models_v6"
+_MANIFEST = _RES / "PP-OCRv6_models_manifest.txt"
+# 本进程已校验过的文件名（校验只在首次用到时做一次，避免每次热切换都重算哈希）
+_VERIFIED: set = set()
+
+
+def verify_models(names=None, directory=None) -> list:
+    """按清单校验模型文件完整性，返回 [(文件名, 问题)]；空列表 = 全部通过。
+
+    清单由下载脚本生成，每行格式：
+        序号  规模  文件名  字节数  人类可读大小  SHA256
+
+    为什么要有这道校验：模型文件被替换、或被不完整地下载/复制时，onnxruntime
+    通常**不会报错**，而是给出诡异甚至错误的识别结果 —— 排查成本极高。这里把
+    问题显式落到日志里。
+
+    **不阻断启动**：校验失败只记日志（调用方见 _check_models_once），
+    因为模型不可用时的正确降级是「照常启动、让用户看到识别异常」，
+    而不是启动即崩。
+
+    names 为 None 时校验清单里的全部文件；否则只校验其中被列出的那些
+    （正常调用只传当前档位用到的文件，避免每次启动都哈希全部模型）。
+    """
+    import hashlib
+
+    d = Path(directory) if directory else _DIR_V6
+    if not _MANIFEST.is_file():
+        return []
+    try:
+        lines = _MANIFEST.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    want = set(names) if names else None
+    problems = []
+    for ln in lines:
+        parts = ln.split()
+        # 只认数据行：首列是序号、末列是 64 位十六进制
+        if len(parts) < 6 or not parts[0].isdigit() or len(parts[-1]) != 64:
+            continue
+        name, size_s, digest = parts[2], parts[3], parts[-1]
+        if want is not None and name not in want:
+            continue
+        f = d / name
+        try:
+            if not f.is_file():
+                problems.append((name, "缺失"))
+                continue
+            actual = f.stat().st_size
+            if actual != int(size_s):
+                problems.append((name, f"大小不符（期望 {size_s}，实际 {actual}）"))
+                continue
+            h = hashlib.sha256()
+            with f.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            if h.hexdigest() != digest.lower():
+                problems.append((name, "SHA256 不符（文件被替换或下载不完整）"))
+        except OSError as e:
+            problems.append((name, f"读取失败：{e}"))
+    return problems
+
+
+def _check_models_once(names) -> None:
+    """首次用到某批模型时校验一次完整性，问题记日志（不抛、不阻断）。"""
+    todo = [n for n in (names or []) if n not in _VERIFIED]
+    if not todo:
+        return
+    _VERIFIED.update(todo)
+    try:
+        problems = verify_models(todo)
+    except Exception as e:          # noqa: BLE001  校验本身失败不该影响识别
+        get_logger("ocr").warning("模型完整性校验异常：%s", e)
+        return
+    for name, why in problems:
+        get_logger("ocr").warning(
+            "模型文件校验未通过：%s — %s（目录 %s）", name, why, _DIR_V6)
 
 # ---- DirectML 适配器选择 ----
 # rapidocr 的 ProviderConfig 用 omegaconf DictConfig 传 EP options，onnxruntime
@@ -63,15 +143,19 @@ except Exception:  # pragma: no cover - rapidocr 未装/版本差异
     _DML_PATCHED = False
 
 
-def _probe_infer_ms(model_path, providers) -> float | None:
-    """建 session 预热后跑 5 次推理，返回平均毫秒；不可用返回 None。
+def _probe_infer_ms(model_path, providers, sess=None) -> float | None:
+    """建 session（或复用调用方已建的 session）预热后跑 5 次推理，返回平均毫秒。
 
-    输入用 640x640（接近真实截图 det 负载）——320 太小会低估 GPU 收益
-    （实测 tiny det 320x320 比值 <1.5 而完整管线 1.63×，导致门槛误拒）。
+    不可用返回 None。输入用 640x640（接近真实截图 det 负载）——320 太小会低估
+    GPU 收益（实测 tiny det 320x320 比值 <1.5 而完整管线 1.63×，导致门槛误拒）。
+    支持 sess 复用：DML 探测路径原实现每设备建 2 个 session（provider 落位验证 +
+    测速各一份），与「onnxruntime-directml 多 DML session 共存会段错误」的实测
+    结论矛盾；复用同一 session 既消解该风险，也省一次模型加载。
     """
     try:
-        import onnxruntime as ort
-        sess = ort.InferenceSession(str(model_path), providers=providers)
+        if sess is None:
+            import onnxruntime as ort
+            sess = ort.InferenceSession(str(model_path), providers=providers)
         io = sess.get_inputs()[0]
         feed = {io.name: np.random.rand(1, 3, 640, 640).astype("float32")}
         for _ in range(3):
@@ -166,11 +250,10 @@ def probe_cuda_devices(det_path=None) -> list[dict]:
             # 不存在的卡 onnxruntime 会静默回退 CPU —— 需确认真用 CUDA EP
             if sess.get_providers()[0] != "CUDAExecutionProvider":
                 results.append({"id": dev, "ok": False})
+                del sess
                 continue
-            gpu_ms = _probe_infer_ms(
-                det,
-                [("CUDAExecutionProvider", {"device_id": str(dev)}),
-                 "CPUExecutionProvider"])
+            gpu_ms = _probe_infer_ms(det, None, sess=sess)
+            del sess      # 显式释放：CUDA arena 峰值在 session 析构后才归还
         except Exception as e:  # noqa: BLE001 设备不可用 → 试下一个
             results.append({"id": dev, "ok": False, "err": str(e)[:100]})
             continue
@@ -215,11 +298,10 @@ def probe_dml_devices(det_path=None) -> list[dict]:
                            "CPUExecutionProvider"])
             if sess.get_providers()[0] != "DmlExecutionProvider":
                 results.append({"id": dev, "ok": False})
+                del sess
                 continue
-            dml_ms = _probe_infer_ms(
-                det,
-                [("DmlExecutionProvider", {"device_id": str(dev)}),
-                 "CPUExecutionProvider"])
+            dml_ms = _probe_infer_ms(det, None, sess=sess)
+            del sess
         except Exception as e:  # noqa: BLE001 设备不可用 → 试下一个
             results.append({"id": dev, "ok": False, "err": str(e)[:100]})
             continue
@@ -237,21 +319,30 @@ def probe_dml_devices(det_path=None) -> list[dict]:
     return results
 
 
+_DML_DEVICE_CACHE: int | None = None   # _detect_dml_device 结果缓存（None = 未探测）
+
+
 def _detect_dml_device(det_path=None) -> int:
     """取第一个可用的 DML 适配器索引（仅可用性判断，不做性能门槛）。
 
     环境变量 CLICKOCR_DML_DEVICE 可强制指定；全部不可用返回 -1（回退 CPU）。
+    结果进程内缓存：适配器拓扑在运行期不会变化，而完整探测（CPU 基准 +
+    每设备建 session 预热计时）耗时数秒，switch_model 重建引擎时不应重复跑。
     """
+    global _DML_DEVICE_CACHE
     env = os.environ.get("CLICKOCR_DML_DEVICE", "").strip()
     if env:
         try:
             return int(env)
         except ValueError:
             pass
-    for r in probe_dml_devices(det_path):
-        if r.get("ok"):
-            return r["id"]
-    return -1
+    if _DML_DEVICE_CACHE is None:
+        _DML_DEVICE_CACHE = -1
+        for r in probe_dml_devices(det_path):
+            if r.get("ok"):
+                _DML_DEVICE_CACHE = r["id"]
+                break
+    return _DML_DEVICE_CACHE
 
 # v6 三档 → (ModelType, det 文件, rec 文件, 字典文件)；仅统一包可用时定义
 if _NEW:
@@ -493,6 +584,15 @@ class RapidOcrEngine:
         self._use_dml = use_dml
         self._gpu_active = False
         self._lazy = lazy
+        # 引擎构建/切换互斥锁：_worker/_drop_worker/_table_worker 三个常驻线程
+        # 都可能并发触发首次识别（懒加载），无锁时各自 _build_v6 互相覆盖，
+        # 泄漏整个 RapidOCR 实例；onnxruntime-directml 多 DML session 共存
+        # 更会直接段错误（实测）——双检锁保证全进程只构建一份。
+        self._lock = threading.Lock()
+        # 推理串行锁（与 _lock 分开，见 recognize 的说明）：把「取引擎引用 + 跑完
+        # 本次推理」整段变为原子。_worker（截图）与 _drop_worker（拖放）包装的是
+        # 同一个引擎对象，必须有这把锁才不会同时进入 onnxruntime 推理。
+        self._infer_lock = threading.Lock()
         # 懒加载：引擎对象先建（参数已存），模型等首次 recognize 时才真正构建，
         # 避免「OCR 引擎常驻」关闭时启动即占用 ~200-400MB 内存。
         self._engine = None
@@ -500,15 +600,18 @@ class RapidOcrEngine:
             self._ensure_engine(config_path)
 
     def _ensure_engine(self, config_path=None):
-        """首次识别前构建底层引擎（懒加载用，幂等）。"""
+        """首次识别前构建底层引擎（懒加载用，幂等；双检锁线程安全）。"""
         global _NUMA_APPLIED
         if not _NUMA_APPLIED:
             _apply_numa_affinity()
             _NUMA_APPLIED = True
         if self._engine is not None:
             return self._engine
-        self._engine = self._build_v6()
-        return self._engine
+        with self._lock:
+            if self._engine is not None:   # 双检：等锁期间可能已被并发构建
+                return self._engine
+            self._engine = self._build_v6()
+            return self._engine
 
     # ---- 构建 ----
     def _build_v6(self):
@@ -516,6 +619,10 @@ class RapidOcrEngine:
             raise RuntimeError("未找到可用 OCR 后端：rapidocr(3.9+) 未安装")
         mtype, det_name, rec_name, dict_name = _V6_MODELS.get(
             self._model_set, _V6_MODELS["v6-tiny"])
+        # 首次用到本档模型时校验一次完整性（缺失/大小不符/SHA256 不符 → 记日志）。
+        # 放在这里而不是启动流程里：只校验**本档真正要加载**的文件，不哈希全部模型；
+        # 且不阻断——文件有问题时照常启动，让用户看到识别异常而非启动失败。
+        _check_models_once([det_name, rec_name, dict_name])
         params = {
             "Global.use_cls": False,                    # v6 无独立方向分类
             "EngineConfig.onnxruntime.intra_op_num_threads": _ocr_thread_count(),
@@ -548,14 +655,23 @@ class RapidOcrEngine:
                 "do_copy_in_default_stream": True,
             }
         elif self._use_dml:
-            params["EngineConfig.onnxruntime.use_dml"] = True
             global _DML_DEVICE
             _DML_DEVICE = _detect_dml_device(_DIR_V6 / det_name)
+            if _DML_DEVICE >= 0:
+                params["EngineConfig.onnxruntime.use_dml"] = True
+            # else：全部适配器不可用（如 930MX 建 session 成功但推理失败）→
+            # 不设 use_dml、按 CPU 构建。原实现此处仍留 use_dml=True，rapidocr
+            # 会按默认 DML device 0 建 session，导致每次 recognize 抛异常
+            # （OCR 完全不可用）；_gpu_active=False 只是显示层，救不了 provider。
         engine = _RapidOCR_NEW(params=params)
         # DML：gpu_active 由探测判定（探测时已建 session 并跑过推理验证）；
         # 不可再调 _probe_gpu —— onnxruntime-directml 多 DML session 共存会段错误（实测）
         if self._use_dml:
-            self._gpu_active = _DML_DEVICE >= 0
+            self._gpu_active = _DML_DEVICE is not None and _DML_DEVICE >= 0
+            if not self._gpu_active:
+                import logging
+                logging.getLogger("clickocr.ocr").warning(
+                    "DML 适配器全部不可用，OCR 引擎已回退 CPU")
         else:
             self._gpu_active = self._probe_gpu()
         return engine
@@ -583,21 +699,40 @@ class RapidOcrEngine:
     def switch_model(self, model_set: str) -> None:
         """M2 — 运行期切换模型档位（v6-tiny / v6-small / v6-medium）。
 
-        仅丢弃并重建内部 RapidOCR 引擎（self._engine = None 后 _ensure_engine()），
-        保持本 RapidOcrEngine 包装对象不变——app 层 table_engine 等已绑定的
-        self.recognize 引用依然有效，表格识别自动跟着新档位走。
-        切换为同步加载（首次约 1–2s），调用方注意放后台线程。
+        仅丢弃并重建内部 RapidOCR 引擎，保持本 RapidOcrEngine 包装对象不变
+        ——app 层 table_engine 等已绑定的 self.recognize 引用依然有效，表格
+        识别自动跟着新档位走。切换为同步加载（首次约 1–2s），调用方注意放
+        后台线程。持 _infer_lock + _lock：等正在跑的推理收尾后才释放旧引擎
+        （否则会在推理中途把 session 置 None），并与 _ensure_engine 互斥，
+        避免「引擎已置 None 但新引擎尚未建好」的中间态窗口。
+        锁序与 recognize 一致（先 _infer_lock 再 _lock），不会死锁。
         """
-        self._model_set = model_set
-        self._engine = None          # 丢弃旧引擎（释放模型内存）
-        self._gpu_active = False
-        self._ensure_engine()        # 同步重建（构建失败向上抛，由调用方兜底）
+        with self._infer_lock:
+            with self._lock:
+                self._model_set = model_set
+                self._engine = None          # 丢弃旧引擎（释放模型内存）
+                self._gpu_active = False
+                self._engine = self._build_v6()   # 同步重建（失败向上抛，由调用方兜底）
 
     # ---- 识别 ----
     def recognize(self, image: np.ndarray) -> list[OcrBox]:
-        engine = self._ensure_engine()
-        out = engine(image, use_det=True, use_cls=False, use_rec=True)
-        result = out[0] if isinstance(out, tuple) else out
+        # 「取引擎引用 → 跑完推理」整段持 _infer_lock，而不是取完引用在锁外调用：
+        # OcrWorker（截图识别）与 drop 队列线程包装的是**同一个**引擎对象，无锁
+        # 时两个线程会同时进入 onnxruntime 推理——DML/CUDA session 非线程安全，
+        # 文件头记录的「多 DML session 共存段错误」正是这一类并发。
+        # 收敛点为什么在这里：所有识别入口（OcrWorker、TableWorker 经
+        # TableEngine.ocr_recognize、drop 队列、dev_window、测试）最终都调用本
+        # 方法，锁只在这一处，调用点谁都不用加锁，也就不会漏掉某条路径；
+        # switch_model 持同一把锁，故「拿到旧引擎引用 → 切模型把它释放 → 再用」
+        # 的窗口也不存在（切模型必须等本次推理结束）。
+        # 为什么另设 _infer_lock 而不复用 _lock：推理是秒级长操作，_lock 还兼管
+        # 「构建/切换」，而 App._ensure_engine 的懒加载路径会在 **UI 线程**直接调
+        # RapidOcrEngine._ensure_engine()（keep_alive=false 的首次识别）。两把锁
+        # 分开后，UI 线程最多等一次短暂的构建，绝不会等推理跑完（不引入界面冻结）。
+        with self._infer_lock:
+            engine = self._ensure_engine()
+            out = engine(image, use_det=True, use_cls=False, use_rec=True)
+            result = out[0] if isinstance(out, tuple) else out
 
         # 统一包：boxes(N,4,2) / txts / scores
         boxes = getattr(result, "boxes", None)

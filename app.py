@@ -43,6 +43,7 @@ from appmod.history_mixin import HistoryMixin
 from appmod.drop_mixin import DropMixin
 from appmod.float_mixin import FloatMixin
 from appmod.capture_mixin import CaptureMixin
+from appmod.workers import ModelSwitchWorker
 
 log = get_logger("app")
 
@@ -62,6 +63,10 @@ def _make_icon() -> QIcon:
 
 class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
     INSTANCE_NAME = "ClickOCR-SingleInstance"
+    # 单实例管道协议（读写两端共用本常量）：第二实例连上后必须发这个 payload，
+    # 服务端校验通过才唤起截图。原先两端各写各的、服务端根本不看内容——
+    # 任意本地进程连上这个命名管道就能触发一次全屏截图。
+    INSTANCE_PING = b"show"
 
     @property
     def ocr_auto(self) -> bool:
@@ -124,9 +129,15 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
             self.engine = None
             self._ocr_error = str(e) or type(e).__name__
             log.exception("OCR 引擎初始化失败（程序继续运行，OCR 不可用）")
-        self._engine_lazy_init = not self.keep_alive
         self.svc = ScreenshotService()                  # keep-alive
-        self.dpr = self.app.primaryScreen().devicePixelRatio()
+        # 主屏 DPR：仅作「取不到屏」时的默认值（多屏混合 DPI 必须按点取屏，
+        # 见 _dpr_at）。primaryScreen() 在无头/异常环境可能返回 None，
+        # 原写法 .devicePixelRatio() 会直接抛 AttributeError → 启动即失败。
+        self.dpr = self._dpr_at()
+        # 本次抓屏所用那块屏的 dpr（start_capture 时按遮罩所在屏更新）。
+        # raw_bbox 是**物理像素**，把图换算回逻辑尺寸必须用同一块屏的 dpr，
+        # 否则副屏（尤其混合 DPI）上浮窗尺寸会算错。默认 = 主屏 dpr。
+        self._capture_dpr = self.dpr
         log.info("OCR 引擎: %s / accel=%s / gpu_active=%s",
                  model_set, self.accel,
                  (self.engine.get_info().get("gpu_available")
@@ -169,6 +180,11 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
         self.hotkey.on_failed = lambda: self.tray.showMessage(
             "ClickOCR", "全局热键注册失败（可能被占用），请用托盘\"截图\"按钮",
             QSystemTrayIcon.Warning, 4000)
+        # 主热键被占用、静默换成备用组合时告知用户实际生效的键
+        # （print 对 GUI 用户不可见，否则以为还是自己设的键）
+        self.hotkey.on_fallback = lambda label: self.tray.showMessage(
+            "ClickOCR", f"截图热键被占用，已改用 {label}",
+            QSystemTrayIcon.Warning, 4000)
 
         self._overlay = None
         self._overlays = []          # 贴图窗口列表（上限控制，默认 1 个）
@@ -179,6 +195,18 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
         self._table_worker = None
         self._table_busy = False     # 表格识别是否进行中（常驻线程无 isRunning 语义）
         self._drop_worker = None     # 拖放批量 OCR 的常驻工作线程（单线程复用）
+        self._drop_import_worker = None   # 拖放导入线程（读/解码/编码/落库）
+        self._drop_ocr_queue = []    # 待识别队列 [(rid, 原图绝对路径)]
+        self._drop_ocr_busy = False  # 是否有 OCR 任务在途（_drop_worker 单槽）
+        self._model_switch_worker = None  # 模型档位热切换线程（一次性）
+        self._pending_model_set = None    # 排队中的切换目标（上一 worker 未收尾时）
+        # 以下状态原先只在各自流程首次执行时赋值（靠调用顺序保证「先赋后用」），
+        # 集中在此初始化：既让共享状态契约显式化，也避免任何提前读取报 AttributeError
+        self._hidden_windows = []    # 截图前隐藏的『操作 UI』（成功/失败/取消后恢复）
+        self._loader = None          # 启动时后台加载模型的线程（keep_alive）
+        self._scroll_worker = None   # 滚动截图工作线程
+        self._manual_cap = None      # 滚动截图（手动模式）滚轮推帧线程
+        self._stop_listener = None   # 滚动截图（手动模式）停止监听线程
         self._table_panels = []      # 已打开的表格预览面板
         self._table_result = None    # 最近一次表格识别结果（双击/长按开窗用）
         self._table_pending_window = False   # 识别完成前已请求开窗
@@ -196,22 +224,81 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
     # ---- 单实例 ----
 
     def _check_single(self):
+        """单实例检测：已有实例 → 发 INSTANCE_PING 唤起并退出；否则自己监听。
+
+        listen 失败**不能静默继续**：残留的 socket 文件（上次被强杀）或名字被占
+        时若当成「首个实例」接着跑，会出现两个托盘图标 + 两份热键注册。
+        故失败先清残留重试一次，仍失败则记录 _single_failed，由 run() 提示并退出。
+        """
+        self._single_failed = None
         sock = QLocalSocket()
         sock.connectToServer(self.INSTANCE_NAME)
         if sock.waitForConnected(300):
-            sock.write(b"show")
+            sock.write(self.INSTANCE_PING)      # 协议见 INSTANCE_PING
             sock.flush()
             sock.waitForBytesWritten(300)
             self.is_second = True
             return
         self.is_second = False
         self.server = QLocalServer()
-        self.server.listen(self.INSTANCE_NAME)
-        self.server.newConnection.connect(self._on_second)
-
+        if self.server.listen(self.INSTANCE_NAME):
+            self.server.newConnection.connect(self._on_second)
+            return
+        log.warning("单实例监听失败（%s），清理残留后重试", self.server.errorString())
+        QLocalServer.removeServer(self.INSTANCE_NAME)
+        if self.server.listen(self.INSTANCE_NAME):
+            self.server.newConnection.connect(self._on_second)
+            return
+        self._single_failed = self.server.errorString() or "未知错误"
+        log.error("单实例监听仍失败：%s", self._single_failed)
 
     def _on_second(self):
-        self.start_capture()
+        """第二实例连上来：交给 _on_second_data 校验 payload 后再截图。
+
+        非阻塞写法：不在槽里 waitForReadyRead 等数据——本槽在主线程执行，
+        阻塞等待会被「连上但不发数据」的任意本地进程拖住界面（最长 300ms/次）。
+        """
+        while self.server.hasPendingConnections():
+            conn = self.server.nextPendingConnection()
+            if conn is None:
+                return
+            conn.readyRead.connect(partial(self._on_second_data, conn))
+            conn.disconnected.connect(conn.deleteLater)
+
+    def _on_second_data(self, conn):
+        """校验第二实例的请求字节：只认 INSTANCE_PING，其余一律忽略并断开。
+
+        原先收到**任何**连接都直接 start_capture，等于把「触发一次全屏截图」暴露
+        给任意本地进程（连上管道即可反复触发）。
+        """
+        data = bytes(conn.readAll().data()).strip()
+        if data != self.INSTANCE_PING:
+            log.warning("忽略单实例管道的非法请求：%r", data[:32])
+        else:
+            self.start_capture()
+        conn.disconnectFromServer()
+
+    # ---- 多屏 DPI ----
+
+    def _dpr_at(self, x: int | None = None, y: int | None = None) -> float:
+        """取坐标点所在显示器的 DPR —— 多屏 DPI 换算的**唯一入口**。
+
+        多屏混合 DPI（如主屏 100% / 副屏 150%）时，用主屏 DPR 换算副屏上的
+        坐标会偏移、截错内容，必须按点取屏。缺省 x/y（或取不到屏）时回退主屏
+        → 再回退 1.0，无头环境下 primaryScreen() 返回 None 也不会抛异常。
+        调用约定：x/y 用**全局逻辑坐标**（如 overlay 的 mapToGlobal 结果）；
+        供 appmod/capture_mixin.py 的框选坐标 → 物理像素换算调用。
+        """
+        scr = None
+        try:
+            if x is not None and y is not None:
+                scr = self.app.screenAt(QPoint(int(x), int(y)))
+            if scr is None:
+                scr = self.app.primaryScreen()
+            dpr = scr.devicePixelRatio() if scr is not None else 0.0
+        except Exception:      # noqa: BLE001 取屏失败按 1.0 处理（不阻断截图）
+            dpr = 0.0
+        return dpr or 1.0
 
     # ---- 托盘 ----
 
@@ -256,6 +343,12 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
                                 if p is not None and self._panel_alive(p)]
         if self._history_panels:
             panel = self._history_panels[0]
+            # 面板是单例、close 仅隐藏不销毁——重新打开时必须 reload，
+            # 否则看不到刚截的图（_save_record 落库路径不刷新面板）
+            try:
+                panel.reload()
+            except Exception:  # noqa: BLE001
+                log.exception("重新打开历史面板时刷新失败")
             panel.show()
             panel.raise_()
             panel.activateWindow()
@@ -300,33 +393,72 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
 
 
     def _on_model_changed(self, new_set: str):
-        """设置保存后模型档位变更：更新 model_tier 并热切换引擎内部模型。
+        """设置保存后模型档位变更：更新 model_tier 并后台热切换引擎内部模型。
 
         关键：只重建 self.engine 的内部 RapidOCR 引擎（switch_model 丢弃
         _engine 再重建），包装对象不变——表格引擎（table_engine）绑定的
         self.engine.recognize 引用依然有效，表格识别自动跟着新档位走。
+        切换会加载新模型（首次约 1-2s），原先在 UI 线程同步执行会冻结界面，
+        现投递到 ModelSwitchWorker 后台线程，完成后回主线程更新状态。
         切换失败走 _warn_ocr_failed 弹窗路径，程序继续运行（OCR 不可用）。
+
+        并发切换改为**排队**：上一次切换还没结束时不再 wait(5000) 冻结界面
+        最长 5 秒，而是记下目标档位后立即返回，由上一次的信号回调续做
+        （见 _on_model_switched / _on_model_switch_failed）。
         """
         self.model_tier = MODEL_SET_TO_TIER.get(new_set, "tiny")
         eng = getattr(self, "engine", None)
         if eng is None:
             return   # 引擎本不可用：仅更新 tier，历史记录标记仍正确
-        try:
+        prev = getattr(self, "_model_switch_worker", None)
+        if prev is not None and prev.isRunning():
+            # 排队：不阻塞 UI 等它收尾；只保留**最新**档位（用户连点几次以
+            # 最后一次为准），旧 worker 的 done/failed 回调里自动续做。
+            self._pending_model_set = new_set
             self._set_engine_status("模型切换中…")
-            eng.switch_model(new_set)     # 同步重建内部引擎（首次约 1-2s）
-            self._set_engine_status("就绪")
-            log.info("OCR 模型档位已切换: %s（tier=%s）", new_set, self.model_tier)
-            try:
-                self.tray.showMessage(
-                    "ClickOCR", f"OCR 模型已切换：{new_set}",
-                    QSystemTrayIcon.Information, 2500)
-            except Exception:   # noqa: BLE001 托盘不可用不阻断
-                pass
-        except Exception as e:  # noqa: BLE001
-            self._ocr_error = str(e) or type(e).__name__
-            self._set_engine_status("OCR 不可用")
-            log.exception("OCR 模型档位切换失败: %s", e)
-            self._warn_ocr_failed()
+            log.info("模型切换进行中，%s 已排队等待", new_set)
+            return
+        self._pending_model_set = None
+        self._start_model_switch(eng, new_set)
+
+    def _start_model_switch(self, eng, new_set: str):
+        """投递一次后台档位切换（单一入口：立即切换与排队续做都走这里）。"""
+        self._set_engine_status("模型切换中…")
+        w = ModelSwitchWorker(eng, new_set)
+        w.done.connect(self._on_model_switched)
+        w.failed.connect(self._on_model_switch_failed)
+        self._model_switch_worker = w
+        w.start()
+
+    def _on_model_switched(self, new_set: str):
+        self._model_switch_worker = None
+        # 排队中的档位：上一次切换已收尾，接着切（用户最后一次的选择）
+        pending = self._pending_model_set
+        if pending is not None:
+            self._pending_model_set = None
+            log.info("继续排队的模型切换：%s", pending)
+            self._start_model_switch(self.engine, pending)
+            return
+        self._set_engine_status("就绪")
+        log.info("OCR 模型档位已切换: %s（tier=%s）", new_set, self.model_tier)
+        try:
+            self.tray.showMessage(
+                "ClickOCR", f"OCR 模型已切换：{new_set}",
+                QSystemTrayIcon.Information, 2500)
+        except Exception:   # noqa: BLE001 托盘不可用不阻断
+            pass
+
+    def _on_model_switch_failed(self, msg: str):
+        self._model_switch_worker = None
+        # 排队的档位不自动重试：刚失败的这次重建已经弹窗报「OCR 不可用」，
+        # 立刻再切一次大概率同样失败并重复弹窗；用户重新保存即会再触发。
+        if self._pending_model_set is not None:
+            log.warning("模型切换失败，丢弃排队的档位 %s", self._pending_model_set)
+            self._pending_model_set = None
+        self._ocr_error = msg
+        self._set_engine_status("OCR 不可用")
+        log.error("OCR 模型档位切换失败: %s", msg)
+        self._warn_ocr_failed()
 
 
     def run(self):
@@ -337,11 +469,30 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
             )
             sys.exit(0)
             return
+        # 单实例监听失败（见 _check_single）：不能再往下跑，否则会出现两个托盘
+        # 图标 + 两份热键注册。明确提示后退出，而不是静默双实例。
+        if getattr(self, "_single_failed", None):
+            from ui.base.texts import T as _T
+            from ui.base.theme_dialog import ThemeDialog
+            ThemeDialog.warning(
+                None, "ClickOCR",
+                _T("app.instance_fail",
+                   "单实例监听失败（{}）：为避免出现两个托盘图标与重复热键，"
+                   "程序将退出。请确认是否已有 ClickOCR 在运行。"
+                   ).format(self._single_failed))
+            sys.exit(0)
+            return
         self.hotkey.install(self.app, self.combo)
         # OCR 引擎启动加载失败（keep_alive=true）：延迟弹窗提示，程序继续运行
         if getattr(self, "_ocr_error", None) and self.engine is None:
             from PySide6.QtCore import QTimer as _QT
             _QT.singleShot(400, self._warn_ocr_failed)
+        # 附加热键回调预绑定（即使配置为 off）：设置面板日后启用该热键时
+        # set_secondary_combo 才能取到回调——否则注册成功但回调为 None，
+        # 按键按下无响应（off → on 的启用路径原先就踩这个洞）
+        self.hotkey.set_secondary_callback(2, self.open_history)
+        self.hotkey.set_secondary_callback(3, self.capture_fullscreen)
+        self.hotkey.set_secondary_callback(4, self._toggle_through_top)
         # M2：历史记录全局热键（默认 Ctrl+`，可配置）
         self.history_combo = self.config.get(
             "hotkey_global", "history", "ctrl+`")
@@ -375,14 +526,28 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
         延迟到解释器 shutdown，CUDA context 释放滞后（NVIDIA 服务侧句柄残留）。
         这里主动释放，确保退出时 GPU 资源立即归还。
         """
-        for attr in ("_worker", "_drop_worker", "_table_worker"):
+        # 常驻线程全部纳入停止范围：除三个识别 worker 外还有 EngineLoader
+        # （启动即退出的场景下模型仍在后台加载，不 wait 会触发
+        # "QThread: Destroyed while thread is still running"）
+        for attr in ("_worker", "_drop_worker", "_table_worker", "_loader",
+                     "_drop_import_worker", "_model_switch_worker"):
             w = getattr(self, attr, None)
-            if w is not None and w.isRunning():
+            if w is None or not w.isRunning():
+                continue
+            # 不是所有 worker 都有 stop()（有的是直接重写 run 循环的 QThread）：
+            # 原先用 try/except pass 吞掉 AttributeError，结果是「以为已经通知停止、
+            # 其实什么都没做」，只能靠后面的 wait 超时才发现。
+            w_stop = getattr(w, "stop", None)
+            if w_stop is None:
+                log.warning("退出：线程 %s 无 stop()，只能等其自然结束", attr)
+            else:
                 try:
-                    w.stop()
-                except Exception:  # noqa: BLE001
-                    pass
-                w.wait(2000)
+                    w_stop()
+                except Exception as e:   # noqa: BLE001 停不下来也要继续退出流程
+                    log.warning("退出：线程 %s stop() 失败：%s", attr, e)
+            if not w.wait(2000):
+                # 超时仍未结束：记日志（terminate 有 OS 层风险，仅诊断用）
+                log.warning("退出时线程 %s 等待超时（可能被强杀）", attr)
         # 显式释放 onnxruntime session（CUDA context / 显存随 session 析构归还）
         try:
             eng = getattr(self, "engine", None)

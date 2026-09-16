@@ -174,7 +174,8 @@ class HistoryMixin:
         原先是「拖放落库 / 保存浮窗 / 收藏即保存」三处各写一份同样的
         缩略图重建 + 二次编码（宽 160、主图同格式的算法重复三处），统一到此。
         返回 (ok, ext, image_bytes, thumb_bytes)；主图编码失败时 ok=False、
-        其余为 None。缩略图编码失败沿用原行为（忽略，写空字节）。
+        其余为 None。缩略图编码失败忽略（写空字节）——不向上抛异常：
+        拖放循环等调用方对单张失败只跳过，主图已成功时不应整条丢弃。
         """
         ok, ext, buf = self._encode_image(img)
         if not ok:
@@ -183,7 +184,10 @@ class HistoryMixin:
         tw = self.THUMB_WIDTH
         th = max(1, int(round(h * tw / w)))
         thumb = cv2.resize(img, (tw, th), interpolation=cv2.INTER_AREA)
-        _, _, tbuf = self._encode_image(thumb)
+        tok, _text, tbuf = self._encode_image(thumb)
+        if not tok or tbuf is None:
+            log.warning("缩略图编码失败（忽略，落库写空字节）")
+            return True, ext, buf.tobytes(), b""
         return True, ext, buf.tobytes(), tbuf.tobytes()
 
 
@@ -383,7 +387,7 @@ class HistoryMixin:
     # ---- M2·γ：Ctrl+R 重新抓取当前区域并识别，覆盖旧记录（D-M2-3）----
 
     def _reocr(self):
-        ov = self._overlay
+        ov = self._live_overlay()   # 统一存活校验（见 FloatMixin._live_overlay）
         if ov is None:
             return
         self._save_record(ov)   # Ctrl+R 重新 OCR = 操作，确保落库
@@ -446,31 +450,14 @@ class HistoryMixin:
             return
         rid = getattr(ov, "history_id", None)
         if rid is None:
-            # 未保存过 → 保存并收藏
-            try:
-                img = ov.img
-                ok, ext, image_bytes, thumb_bytes = self._encode_image_pair(img)
-                if not ok:
-                    return
-                ocr_text = "\n".join(b.text for b in ov.boxes)
-                ocr_boxes = [
-                    {"text": b.text, "polygon": b.polygon, "score": b.score}
-                    for b in ov.boxes
-                ]
-                if not ocr_boxes and not getattr(ov, "_ocr_done", False):
-                    ocr_boxes = None   # 未识别过：写 NULL（待识别），别写成 '[]'
-                _tier, _dev = self._save_ocr_meta(ov)
-                rid = self.history.save(
-                    image_bytes=image_bytes, thumb_bytes=thumb_bytes,
-                    ocr_text=ocr_text, ocr_boxes=ocr_boxes,
-                    model_tier=_tier, device=_dev,
-                    ext=ext,
-                    name_pattern=self.config.get("software",
-                                                 "name_pattern", ""))
-                ov.history_id = rid
-            except Exception as e:  # noqa: BLE001
-                log.exception("收藏保存失败: %s", e)
-                return
+            # 未保存过 → 复用 _save_record 落库再收藏。
+            # 原先这里手写了一份保存逻辑（不走 _ocr_payload_for_save），
+            # 是三处落库实现中唯一漏掉 kind 字段的——二维码截图直接点收藏
+            # 时 QR 标记丢失，恢复后退化为普通文字。
+            self._save_record(ov)
+            rid = getattr(ov, "history_id", None)
+            if rid is None:
+                return                    # 落库失败（_save_record 内已记日志）
             self.history.set_favorite(rid, True)
             self._sync_favorite(rid, True)
             return
@@ -492,8 +479,11 @@ class HistoryMixin:
                 self._history_panel.reload()
             except Exception:  # noqa: BLE001
                 pass
-        # 2) 贴图/钉图窗口：匹配 rid 的工具栏星标同步
+        # 2) 贴图/钉图窗口：匹配 rid 的工具栏星标同步（先验活：钉图态关窗后
+        #    _pins 可能短暂残留死引用，对其访问 _toolbar 会抛 RuntimeError）
         for ov in list(self._overlays) + list(self._pins):
+            if not self._panel_alive(ov):
+                continue
             if getattr(ov, "history_id", None) == rid:
                 tb = getattr(ov, "_toolbar", None)
                 if tb is not None and tb.btn_fav is not None:

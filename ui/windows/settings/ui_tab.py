@@ -26,7 +26,8 @@ from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QVBoxLayout,
 from config import ConfigManager
 from ui.base.card_window import CardWindow
 from ui.base.texts import T
-from ui.base.theme import apply_theme, resolve_theme
+from ui.base.theme import (apply_theme, resolve_theme,
+                           theme_names, theme_label, system_label)
 from ui.base.theme_dialog import ThemeDialog
 from ui.base.widgets import (ThemeSpinBox, ColorButton as _ColorButton,
                              FitComboBox)
@@ -42,11 +43,15 @@ class UiTabMixin:
         # UI 页 6 个数值栏统一宽度（px）
         _W5 = 75
 
-        # 界面主题
+        # 界面主题：主题清单读自 ui/base/themes.toml，
+        # 新增主题只要在 toml 里加一段，这里会自动多出一项（无需改代码）。
+        # 文案优先走 i18n（ui.theme_<名>），没有则用 toml 里的 label。
         self.combo_theme = QComboBox()
-        self.combo_theme.addItem(T("ui.theme_system", "跟随系统"), "system")
-        self.combo_theme.addItem(T("ui.theme_light", "亮色"), "light")
-        self.combo_theme.addItem(T("ui.theme_dark", "暗色"), "dark")
+        self.combo_theme.addItem(T("ui.theme_system", system_label()),
+                                 "system")
+        for _name in theme_names():
+            self.combo_theme.addItem(
+                T(f"ui.theme_{_name}", theme_label(_name)), _name)
         cur = self._cfg.get("ui", "theme", "system").strip().lower()
         idx = self.combo_theme.findData(cur)
         self.combo_theme.setCurrentIndex(idx if idx >= 0 else 0)
@@ -185,5 +190,3 @@ class UiTabMixin:
         scroll.setWidget(inner)
         inner.setAutoFillBackground(False)
         return page
-
-    # ---- Tab 3：快捷键设置 ----
