@@ -19,8 +19,8 @@ import os
 from ctypes import wintypes
 
 from PySide6.QtCore import Qt, QRect, Signal, QPoint
-from PySide6.QtGui import (QPainter, QColor, QPen, QBrush, QFont,
-                           QGuiApplication, QImage)
+from PySide6.QtGui import (QPainter, QColor, QPen, QBrush, QImage,
+                           QGuiApplication)
 from PySide6.QtWidgets import QApplication, QWidget
 
 from config import ConfigManager
@@ -115,7 +115,6 @@ class SelectionOverlay(QWidget):
         #   单块屏    → 能选任意一屏，但仍跨不了屏（选区框被窗口裁掉）。
         # 覆盖并集后，鼠标按下会隐式抓取，拖动越出本窗口也能继续收到事件，
         # 选区框在每块屏上都可见。
-        from PySide6.QtCore import QPointF
         from PySide6.QtGui import QCursor, QGuiApplication
         self._screens = [s for s in QGuiApplication.screens() if s is not None]
         # 用第一块屏初始化，**不能**用 QRect()：QRect() 是 (0,0,-1,-1)，
@@ -148,7 +147,7 @@ class SelectionOverlay(QWidget):
         # ---- 取色器（类似微信/QQ：光标带放大镜，按 C 复制色值）----
         self._cursor_pt = None        # 当前光标逻辑坐标
         self._pixel_pt = None         # 当前取色像素坐标（物理）
-        self._screen_img = None       # 屏幕底图（遮罩显示前抓取，供取色）
+        self._screen_img = None       # 兜底屏幕底图（主屏；逐屏底图见 _screen_imgs）
         self._picker_size = 7         # 采样边长（奇数，3~15）
         self._picker_zoom = 9         # 每像素放大倍数
         self._pick_hotkey = "c"       # 复制色值快捷键（config 可配）
@@ -156,7 +155,11 @@ class SelectionOverlay(QWidget):
         self._color_fmt = "rgb"       # 色值格式：rgb | hsv | hsl（按 H 循环）
         self._ratio_lock = None       # Alt 按住：锁定宽高比（按下的比例）
         self._hover_probe = None      # 悬停窗口探测节流：上次 (x, y, 单调时刻)
+        # 上一帧取色器**实际画过**的矩形（由 _draw_picker 累积）。局部重绘要靠它
+        # 擦掉旧位置——记录「画了什么」而不是在别处复刻一遍布局算式，后者必然漂移。
+        self._picker_painted = None
         self._scroll_mode = False     # R 键：滚动截图模式（截长图）
+        self._closing = False         # 已取消/已定稿：防 Esc 双通路重复发信号
         self._scroll_hotkey = "r"     # 滚动截图模式快捷键（config 可配）
         # 快捷键/取色器参数：复用 __init__ 顶部已构造的 cfg（原先在这里又
         # `config or ConfigManager()` 造了第二个实例）。这些读操作各自带默认值，
@@ -176,16 +179,13 @@ class SelectionOverlay(QWidget):
             self._picker_size = min(15, self._picker_size + 1)   # 奇数（中心格）
         self._picker_zoom = cfg.getint("ui", "picker_zoom", 9)
         # 遮罩显示前抓屏：取色器读取真实屏幕像素（不被遮罩压暗）。
-        # 抓屏失败只降级取色器（_screen_img 为 None），不阻断框选主流程，
-        # 但必须留痕 —— 否则「取色器取不到颜色」无从排查。
-        self._screen_img = None
-        try:
-            scr = QGuiApplication.primaryScreen()
-            if scr is not None:
-                self._screen_img = scr.grabWindow(0).toImage()
-        except Exception as e:            # noqa: BLE001 抓屏失败不影响框选
-            from core_engine.logging_setup import get_logger
-            get_logger("selection").warning("遮罩前抓屏失败（取色器降级）：%s", e)
+        # **逐屏抓取**：底图是物理像素，用主屏底图 + 主屏 dpr 去读副屏上的光标
+        # 既会越界（取色返回 None）也会读错颜色 —— 多屏下取色器等于失效。
+        # 单屏抓取失败只降级该屏的取色，不阻断框选主流程（见 _grab_screens）。
+        self._screen_imgs = {}        # QScreen → QImage（该屏物理像素底图）
+        self._grab_screens()
+        self._screen_img = self._screen_imgs.get(
+            QGuiApplication.primaryScreen())   # 兜底底图（找不到光标屏时用）
 
         # Esc 兜底：Tool 窗口默认不抢键盘焦点（热键唤出后没点过鼠标时
         # keyPressEvent 收不到按键），用 ApplicationShortcut 在应用激活
@@ -418,18 +418,63 @@ class SelectionOverlay(QWidget):
         self._draw_picker(p)   # 光标取色器（始终显示）
 
     # ---- 取色器 ----
+    def _grab_screens(self):
+        """逐屏抓取底图（构造期调用，必须在遮罩显示前）。
+
+        单屏抓取失败只让**那一块屏**的取色器降级，不阻断框选主流程；但必须
+        留痕 —— 否则「取色器取不到颜色」无从排查（原先只抓主屏，副屏取色
+        静默失效属于同一类问题）。
+        """
+        from core_engine.logging_setup import get_logger
+        log = get_logger("selection")
+        for scr in QGuiApplication.screens():
+            try:
+                img = scr.grabWindow(0).toImage()
+                if not img.isNull():
+                    self._screen_imgs[scr] = img
+            except Exception as e:        # noqa: BLE001 抓屏失败不影响框选
+                log.warning("抓取屏幕底图失败（该屏取色器降级）：%s", e)
+        if not self._screen_imgs:
+            log.warning("所有屏幕底图抓取失败：取色器与放大镜本次不可用")
+
+    def _pick_src(self, logical_pt) -> tuple:
+        """光标处像素的取色源：返回 `(该屏底图, 底图内物理像素 x, y)`。
+
+        底图索引 = 全局逻辑坐标经 `_to_phys` 换算后减去**该屏物理原点**
+        （与框选换算共用同一套函数，避免出现第二份 dpr 实现而漂移）。
+        取不到光标屏时退回主屏底图（多屏 DPI 混合时只是近似，好过整块失效）。
+        """
+        if logical_pt is None or not self._screen_imgs:
+            return (None, 0, 0)
+        g = QPoint(self._geo.x() + int(logical_pt.x()),
+                   self._geo.y() + int(logical_pt.y()))
+        s = self._screen_at(g)
+        img = self._screen_imgs.get(s) if s is not None else None
+        if img is None:
+            s = QGuiApplication.primaryScreen()
+            img = self._screen_imgs.get(s) or self._screen_img
+        if img is None:
+            return (None, 0, 0)
+        px, py = self._to_phys(g)
+        if s is not None:
+            ox, oy = self._screen_phys_origin(s)
+        else:
+            ox = oy = 0
+        return (img, int(round(px - ox)), int(round(py - oy)))
+
     def _pick_color(self, logical_pt) -> QColor | None:
-        """取光标处屏幕像素颜色（物理坐标 × dpr 读底图）。"""
-        if self._screen_img is None or logical_pt is None:
+        """取光标处屏幕像素颜色（按该点所在屏换算，混合 dpr 下也正确）。
+
+        `_pixel_pt` 记录的是**光标所在屏**底图内的物理像素坐标（多屏下比
+        原先「主屏物理坐标」更贴近用户看到的「这是屏幕上哪一点」）。
+        """
+        img, x, y = self._pick_src(logical_pt)
+        if img is None:
             return None
-        dpr = self.devicePixelRatioF() or 1.0
-        x = int(round(logical_pt.x() * dpr))
-        y = int(round(logical_pt.y() * dpr))
-        if not (0 <= x < self._screen_img.width()
-                and 0 <= y < self._screen_img.height()):
+        if not (0 <= x < img.width() and 0 <= y < img.height()):
             return None
         self._pixel_pt = (x, y)
-        return self._screen_img.pixelColor(x, y)
+        return img.pixelColor(x, y)
 
     def _fmt_color(self, col: QColor) -> str:
         """按当前格式输出色值文本：RGB / HSV / HSL。"""
@@ -453,14 +498,15 @@ class SelectionOverlay(QWidget):
         f.setPixelSize(11)
         p.setFont(f)
 
-    def _sample_picker_image(self, sx: int, sy: int, n: int) -> QImage | None:
+    def _sample_picker_image(self, src: QImage, sx: int, sy: int,
+                             n: int) -> QImage | None:
         """采样 n×n 物理像素为一张小图（越界处补黑，与逐格读取语义一致）。
 
+        `src` 由调用方按光标所在屏取（多屏下非主屏），不再内部固定读主屏底图。
         numpy 一次性取块，替代原先每帧 n² 次 QImage.pixelColor（n=15 时 225 次
         逐像素取色，单次涉及格式换算）；返回 None 表示源图格式不适合直接取块，
         调用方回退逐格路径。
         """
-        src = self._screen_img
         if src is None or src.depth() != 32 or src.isNull():
             return None
         try:
@@ -482,17 +528,29 @@ class SelectionOverlay(QWidget):
         except Exception:                        # noqa: BLE001 取块失败走回退
             return None
 
+    # ---- 局部重绘的脏区裕量（逻辑 px）----
+    # 遮罩覆盖整个虚拟桌面（2560×1440 级别），原先每次鼠标移动都 `update()`
+    # 整屏重画：100Hz 鼠标 = 100 次/秒全屏 fillRect。改为只重画「这帧真的变了」
+    # 的区域。下面这些裕量宁可给宽一点——少算会留下残影，多算只是多刷几行像素。
+    _LABEL_BAND = 64      # 尺寸/标题标签贴在框上方（单行/两行），按两行留裕量
+    _LABEL_MAX_W = 460    # 标签最宽（长标题 + 像素坐标），同样宁宽勿窄
+    _PICK_ENV_W = 420     # 取色器（放大镜 + 三行色值框）相对光标的横向包络
+    _PICK_ENV_H = 220     # 同上，纵向包络（含「放不下翻到光标左/上」的翻转）
+
     def _draw_picker(self, p: QPainter):
         """光标放大镜：采样 n×n 物理像素放大显示，中心格高亮 + 色值标签。"""
         pt = self._cursor_pt
-        if pt is None or self._screen_img is None:
+        if pt is None or not self._screen_imgs:
             return
-        dpr = self.devicePixelRatioF() or 1.0
+        # 底图按光标所在屏取：多屏下主屏底图配主屏 dpr 会把放大镜整块画成黑格
+        src, ix, iy = self._pick_src(pt)
+        if src is None:
+            return
         n = self._picker_size
         zoom = self._picker_zoom
         # 采样区（物理像素，以光标为中心）
-        sx = int(round(pt.x() * dpr)) - n // 2
-        sy = int(round(pt.y() * dpr)) - n // 2
+        sx = ix - n // 2
+        sy = iy - n // 2
         cx = n // 2   # 中心格（光标处）
         cy = n // 2
         # 放大镜尺寸（逻辑 px）
@@ -504,20 +562,22 @@ class SelectionOverlay(QWidget):
         if my + mh > self.height():
             my = pt.y() - mh - 16
         mx = max(0, mx); my = max(0, my)
+        # 本帧实际画过的区域（供局部重绘擦除旧位置，见 _content_dirty）
+        dirty = QRect(mx, my, mw + 1, mh + 1)
         # 底
         p.setPen(QPen(QColor(255, 255, 255), 1))
         p.setBrush(QColor(0, 0, 0, 190))
         p.drawRect(QRect(mx, my, mw + 1, mh + 1))
         # 采样内容：整块一次性绘制（缩放为整数倍且关闭平滑 → 每格边界清晰，
         # 与原逐格 fillRect 的观感一致）
-        small = self._sample_picker_image(sx, sy, n)
+        small = self._sample_picker_image(src, sx, sy, n)
         if small is not None:
             _smooth = p.renderHints() & QPainter.SmoothPixmapTransform
             p.setRenderHint(QPainter.SmoothPixmapTransform, False)
             p.drawImage(QRect(mx, my, mw, mh), small)
             p.setRenderHint(QPainter.SmoothPixmapTransform, bool(_smooth))
         else:
-            img = self._screen_img
+            img = src
             for gy in range(n):
                 for gx in range(n):
                     px, py = sx + gx, sy + gy
@@ -554,6 +614,7 @@ class SelectionOverlay(QWidget):
             ly = my + mh + 4
             if ly + 3 * th + 4 > self.height():
                 ly = my - 3 * th - 4
+            dirty = dirty.united(QRect(lx, ly, cw, 3 * th + 2))
             # 底（三行）
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(0, 0, 0, 190))
@@ -570,6 +631,7 @@ class SelectionOverlay(QWidget):
             # 第 3 行：RGB / HSV / HSL
             p.setPen(QColor(255, 255, 255))
             p.drawText(QRect(lx + 7, ly + 2 * th + 3, cw - 14, th - 6), fmt)
+        self._picker_painted = dirty
 
     def _draw_size_label(self, p: QPainter, r: QRect):
         """框选/微调时在框上方显示尺寸 + 光标像素坐标（宽×高 @ x,y）。"""
@@ -638,8 +700,7 @@ class SelectionOverlay(QWidget):
     # ---- 交互 ----
     def mousePressEvent(self, e):
         if e.button() == Qt.RightButton:
-            self.cancelled.emit()       # 右键 = 取消截图
-            self.close()
+            self._on_esc()              # 右键 = 取消截图（走幂等唯一出口）
             return
         if self._adjusted is not None:
             return                      # 微调锁定中：按下即确认，保留选区
@@ -650,11 +711,60 @@ class SelectionOverlay(QWidget):
         self._press_win = self._window_at(e.pos())
         self.update()
 
+    def _frame_dirty(self, r: QRect) -> QRect:
+        """选区/悬停框的脏区：框本身（含描边）+ 它上方那条标签。
+
+        标签画在 `r.top() - th - 4`（贴框上方，放不下才落回框内），且可能比框
+        宽得多（长标题 + 像素坐标）——所以横向按 `_LABEL_MAX_W` 留量，
+        而不是跟着框宽走。
+        """
+        pen = self._border_width + 4
+        band = QRect(r.left() - 4, r.top() - self._LABEL_BAND,
+                     self._LABEL_MAX_W, self._LABEL_BAND + 8)
+        return r.adjusted(-pen, -pen, pen, pen).united(band)
+
+    def _content_dirty(self) -> QRect:
+        """本帧「内容可能变化」的区域——局部重绘用它替代整屏 update()。
+
+        组成：当前选区帧（微调框 / 橡皮筋 / 悬停高亮） ∪ 取色器（**上一帧实际
+        画过的矩形** ∪ 当前光标处的包络）。
+
+        取色器为什么要「上一帧矩形 + 包络」两份：旧位置的像素必须被擦掉（只有
+        记录过才知道它画在哪），而新位置的布局要等 `_draw_picker` 跑完才知道，
+        所以按最大包络保守覆盖，不去复刻那份布局算式。
+        """
+        d = QRect()
+        r = self._adjusted
+        if r is None and self._start is not None and self._end is not None:
+            r = QRect(self._start, self._end).normalized()
+        if r is not None:
+            d = d.united(self._frame_dirty(r))
+        elif self._hover_win is not None:
+            d = d.united(self._frame_dirty(self._hover_win))
+        painted = self._picker_painted
+        if painted is not None:
+            d = d.united(painted)
+        pt = self._cursor_pt
+        if pt is not None:
+            d = d.united(QRect(pt.x() - self._PICK_ENV_W, pt.y() - self._PICK_ENV_H,
+                               self._PICK_ENV_W * 2, self._PICK_ENV_H * 2))
+        # 先外扩再与整屏求交：外扩是为盖住描边/抗锯齿的 1px 溢出；求交保证不会
+        # 产生窗口外的无效区域（也让「脏区必在窗口内」成为可断言的事实）。
+        # 空脏区要单独返回空矩形：QRect() 外扩后会变成一个 (0,0,2,2) 的小区域，
+        # 白白触发一次原点处的重绘。
+        if d.isNull():
+            return QRect()
+        return d.adjusted(-2, -2, 2, 2).intersected(self.rect())
+
     def mouseMoveEvent(self, e):
+        # 先按**旧状态**取脏区（旧选区/旧取色器位置），改完状态再取一次并合并：
+        # 两帧之间的差异区域才是真正要重画的部分。原先这里是无条件
+        # `self.update()`，等价于每次鼠标移动都重画整个虚拟桌面。
+        dirty = self._content_dirty()
         self._cursor_pt = e.pos()
         if self._adjusted is not None:
             # 滚轮微调后锁定选区：移动鼠标不改变（避免悬停窗口覆盖微调框）
-            self.update()
+            self.update(dirty.united(self._content_dirty()))
             return
         if self._start is not None:
             # 超过阈值才算拖拽（区分单击捕捉与自由框选）
@@ -676,7 +786,7 @@ class SelectionOverlay(QWidget):
                     self._hover_win = None
                     self._hover_title = ""
                     self.setCursor(Qt.CrossCursor)
-        self.update()
+        self.update(dirty.united(self._content_dirty()))
 
     def _should_probe_hover(self, pt: QPoint) -> bool:
         """悬停窗口探测节流：位移 < 8px 且距上次探测 < 30ms 时复用结果。
@@ -755,6 +865,7 @@ class SelectionOverlay(QWidget):
             # 滚轮微调后单击确认：提交微调选区（press 时已锁定，无需 _start）
             r = self._adjusted
             self._start = self._end = self._adjusted = self._hover_win = None
+            self._closing = True    # 已定稿：后续 Esc（双通路）不再发 cancelled
             self.region_selected.emit(self._to_raw(r))
             self.close()
             return
@@ -766,21 +877,25 @@ class SelectionOverlay(QWidget):
             # （不误触普通捕捉）；普通模式命中窗口 → 捕捉该窗口；空白 → 取消
             if self._scroll_mode:
                 if self._press_win is not None:
+                    self._closing = True
                     self.scroll_requested.emit(self._to_raw(self._press_win[1]))
                 else:
-                    self.cancelled.emit()
+                    self._on_esc()      # 空白取消：走幂等唯一出口
+                    return
             elif self._press_win is not None:
+                self._closing = True
                 self.region_selected.emit(self._to_raw(self._press_win[1]))
             else:
-                self.cancelled.emit()
+                self._on_esc()          # 空白取消：走幂等唯一出口
+                return
             self.close()
             return
         r = QRect(self._start, self._end).normalized()
         self._start = self._end = None
         if r.width() < 5 or r.height() < 5:
-            self.cancelled.emit()   # 拖拽过小视为误触/取消
-            self.close()
+            self._on_esc()          # 拖拽过小视为误触/取消（走幂等唯一出口）
             return
+        self._closing = True        # 已定稿：后续 Esc（双通路）不再发 cancelled
         if self._scroll_mode:
             self.scroll_requested.emit(self._to_raw(r))   # 滚动截图：框选完成 → 滚屏拼接
         else:
@@ -820,7 +935,15 @@ class SelectionOverlay(QWidget):
 
     def _on_esc(self):
         """Esc 取消截图的唯一出口（keyPressEvent 与 QShortcut 共用）：
-        先发 cancelled 再 close——App 侧靠 cancelled 恢复截图前隐藏的浮窗。"""
+        先发 cancelled 再 close——App 侧靠 cancelled 恢复截图前隐藏的浮窗。
+
+        本函数必须**幂等**：Esc 有两条通路（keyPressEvent + ApplicationShortcut），
+        一次按键可能落到两处，重复 emit 会让 App 侧把「恢复浮窗」做两次
+        （若其实现是 toggle 就会二次翻转）。
+        """
+        if self._closing:
+            return
+        self._closing = True
         self.cancelled.emit()
         self.close()
 

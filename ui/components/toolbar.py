@@ -17,8 +17,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import (QWidget, QHBoxLayout, QPushButton, QLabel,
-                               QButtonGroup, QFontComboBox)
+from PySide6.QtWidgets import (QWidget, QHBoxLayout, QPushButton, QButtonGroup, QFontComboBox)
 
 from platform_compat.fonts import ui_font_family
 
@@ -455,7 +454,7 @@ class _ToolsPack(QWidget):
     def _set_mosaic_mode(self, mode: str):
         """选中马赛克模式：更新状态 + 通知宿主持久化记忆。
         浮层保持打开（方便查看/连续切换），再次点击按钮或切换工具才关闭。"""
-        if mode not in ("pen", "rect", "textbox"):
+        if mode not in MOSAIC_MODES:
             return
         self.mosaic_mode = mode
         self.mosaic_mode_changed.emit(mode)
@@ -483,7 +482,7 @@ class _ToolsPack(QWidget):
 
     def _set_num_style(self, style: str):
         """选中序号样式：更新状态 + 通知宿主持久化记忆（浮层保持打开）。"""
-        if style not in ("circle", "circle_o", "square", "paren", "plain"):
+        if style not in num_style_ids():
             return
         self.num_style = style
         self.num_style_changed.emit(style)

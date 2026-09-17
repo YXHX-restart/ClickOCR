@@ -1,0 +1,5 @@
+# 开发/CI 专用依赖（运行时不需要）：`pip install -r requirements-dev.txt`
+# 已包含运行依赖，故开发机上只装这一个文件即可。
+-r requirements.txt
+
+ruff==0.16.8    # lint 门禁（tests/test_lint.py，规则集见 ruff.toml）

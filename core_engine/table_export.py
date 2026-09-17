@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import html as _html
 import re as _re
-from typing import List, Optional
+from typing import List
 
 from .ai_pipeline import TableResult
 
@@ -30,10 +30,58 @@ except Exception:  # pragma: no cover - 依赖缺失
 _RE_ON_ATTR = _re.compile(
     r"\son\w+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)", _re.IGNORECASE)
 
+# 整段剔除的危险元素（含内容）。**只剥 on* 属性挡不住 `<script>…</script>`
+# 与 `<iframe src=javascript:…>`** —— 它们不需要任何事件属性就能执行/加载脚本。
+# 这里按「元素整体删除」处理、不看内容：本函数的产物只用于表格预览渲染，
+# 去掉这些标签不损失任何表格信息（表格只由 table/tr/td/span 构成）。
+_RE_DANGEROUS_ELEMENT = _re.compile(
+    r"<\s*(script|style|iframe|object|embed|applet|link|meta|base|form|svg)\b[^>]*>"
+    r".*?<\s*/\s*\1\s*>"
+    r"|<\s*/?\s*(script|style|iframe|object|embed|applet|link|meta|base|form|svg)"
+    r"\b[^>]*/?>",
+    _re.IGNORECASE | _re.DOTALL)
+
+# URI 属性（href/src/…）：值命中危险协议时整条属性删掉
+_RE_URI_ATTR = _re.compile(
+    r"(\s(?:href|src|xlink:href)\s*=\s*)(\"[^\"]*\"|'[^']*'|[^\s>]+)",
+    _re.IGNORECASE)
+# javascript:/vbscript:/livescript: 以及 data:text/html（内联 HTML 文档）。
+# 只拦 data:text/html —— data:image/* 是合法的内联图，不该误伤。
+# 注意两种协议的冒号位置不同：`javascript:alert(1)` 的冒号在 scheme 后，
+# 而 `data:text/html` 是 `data:` + MIME 类型，**不能**写成 `data:text/html:`
+_RE_BAD_SCHEME = _re.compile(
+    r"^(?:javascript|vbscript|livescript)\s*:"
+    r"|^data\s*:\s*text/html",
+    _re.IGNORECASE)
+
+
+def _drop_bad_uri(m) -> str:
+    """URI 属性值命中危险协议 → 整条属性删除，否则原样保留。"""
+    val = m.group(2)
+    inner = val[1:-1] if len(val) >= 2 and val[0] in "\"'" and val[-1] == val[0] \
+        else val
+    # 先去掉控制字符与空白再判定：`java\tscript:` / `java&#9;script:` 之类
+    # 混淆写法（HTML 解析器会先把实体与空白归一化，正则不归一化就会漏）
+    probe = _re.sub(r"[\x00-\x20]", "", inner)
+    return "" if _RE_BAD_SCHEME.match(probe) else m.group(0)
+
 
 def _sanitize_html(h: str) -> str:
-    """过滤 HTML 字符串中的内联事件属性（其余原样保留）。"""
-    return _RE_ON_ATTR.sub("", h)
+    """过滤不可信 HTML（模型预测结果 / OCR 单元格文本），供预览渲染。
+
+    三步，缺一不可（原先只有第 2 步）：
+    1) 整段剔除危险元素（script/style/iframe/object/…）；
+    2) 剔除内联事件属性（onerror= / onload= …）；
+    3) 剔除命中危险协议的 href/src（javascript: / vbscript: / data:text/html）。
+
+    当前宿主是 QTextBrowser（不执行 JS），所以 1)/3) 的实际风险有限 —— 但
+    「靠宿主不执行脚本兜着」不是消毒，换 WebEngine / 导出给别人看就立刻成 XSS。
+    """
+    if not h:
+        return h
+    out = _RE_DANGEROUS_ELEMENT.sub("", h)
+    out = _RE_ON_ATTR.sub("", out)
+    return _RE_URI_ATTR.sub(_drop_bad_uri, out)
 
 
 class TableExportService:
@@ -43,7 +91,7 @@ class TableExportService:
     @staticmethod
     def _grid(table: TableResult) -> List[List[str]]:
         if not table.cells:
-            return [[f"" for _ in range(max(1, table.col_count))]
+            return [["" for _ in range(max(1, table.col_count))]
                     for _ in range(max(1, table.row_count))]
         rows, cols = max(table.row_count, 1), max(table.col_count, 1)
         grid = [["" for _ in range(cols)] for _ in range(rows)]

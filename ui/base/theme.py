@@ -38,6 +38,10 @@ SYSTEM_MODE = "system"
 _PANEL_NAMES = ("HistoryPanel", "SettingsPanel", "ShortcutPanel",
                 "ColorPickerDialog", "StatusStrip", "ToolBar",
                 "TablePreviewPanel",
+                # 钉图悬停信息卡片：同为「无边框半透明卡片 + kind 标签」结构，
+                # 原先没登记 → 内层 QFrame#card 拿不到背景、kind 标签读不到
+                # 主题色（浅色主题下文字几乎不可读）。结构一致就该同一份规则。
+                "PinCard",
                 "ThemeDialog")
 
 
@@ -183,6 +187,12 @@ def _rgba(color: str) -> tuple:
         if len(h) == 3:
             h = "".join(ch * 2 for ch in h)
         return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 255)
+    # 显式校验形态：原先直接 c.index("(") —— themes.toml 写错一个槽（比如漏了
+    # 括号或写成裸色名）会抛 `ValueError: substring not found`，既看不出是哪个
+    # 槽、也看不出是什么值，且在启动路径上直接崩。
+    if "(" not in c or ")" not in c:
+        raise ValueError(
+            f"主题色值格式非法：{color!r}（应为 #rgb / #rrggbb / rgb() / rgba()）")
     inner = c[c.index("(") + 1:c.rindex(")")]
     parts = [p.strip() for p in inner.split(",")]
     r, g, b = (int(float(p)) for p in parts[:3])
@@ -386,7 +396,7 @@ def _build_qss(P) -> str:
 {_panels('QCheckBox::indicator:hover')} {{ border-color: {P.accent_text}; }}
 {_panels('QCheckBox::indicator:checked')} {{
     background: {P.accent}; border-color: {P.accent};
-    image: url(__CHECK__);
+    image: url("__CHECK__");
 }}
 
 /* ---- 滑块（设置面板：图片质量等，样式同线宽浮层）---- */
@@ -511,7 +521,7 @@ def _build_qss(P) -> str:
 }}
 {_sel('SettingsPanel', 'QComboBox')}::down-arrow,
 {_sel('ToolBar', '#anno_tools QFontComboBox::down-arrow')} {{
-    image: url(__COMBO_ARROW__);
+    image: url("__COMBO_ARROW__");
 }}
 
 /* ---- 标注子选项浮层内的滑块（音量条样式）----    滑块位于四个在用的标注浮层内；此前这些浮层没有 QSlider 规则，    滑块呈系统原生浅色外观、不随明暗主题切换 */

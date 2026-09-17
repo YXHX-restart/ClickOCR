@@ -6,20 +6,12 @@
 
 from __future__ import annotations
 
-import copy
-import math
 
-from PySide6.QtCore import Qt, QPointF, QRectF, Signal
-from PySide6.QtGui import (QColor, QPen, QBrush, QFont, QPainterPath,
-                           QPolygonF, QPixmap, QImage, QPainter)
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import (QFont)
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QPushButton,
                                QLabel, QFrame, QSlider, QSpinBox,
-                               QButtonGroup, QFontComboBox, QComboBox,
-                               QGraphicsRectItem, QGraphicsLineItem,
-                               QGraphicsPathItem, QGraphicsPolygonItem,
-                               QGraphicsPixmapItem, QGraphicsEllipseItem,
-                               QGraphicsTextItem, QGraphicsItemGroup,
-                               QGraphicsScene, QStyleOptionGraphicsItem)
+                               QButtonGroup, QFontComboBox)
 
 from platform_compat.fonts import ui_font_family
 
@@ -27,11 +19,7 @@ from ui.base.texts import T
 from ui.base.widgets import signals_blocked
 
 # 标注核心纯逻辑（命令撤销体系 + 序列化 + 样式合法值唯一来源，无 Qt 依赖）
-from ui.core.anno_core import (ANNO_VERSION, UNDO_LIMIT, SERIALIZABLE_TYPES,
-                          TOOL_STYLES, NUM_STYLES, MOSAIC_MODES,
-                          _Cmd, _AddCmd, _DeleteCmd, _MoveCmd, _EditCmd,
-                          _ClearCmd, _RenumberCmd,
-                          anno_to_json, anno_from_json)
+from ui.core.anno_core import (TOOL_STYLES, NUM_STYLES)
 
 
 # ---- 命令模式撤销/重做（Command 栈）：命令类见 ui/anno_core.py ----

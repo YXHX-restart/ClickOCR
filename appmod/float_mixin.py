@@ -6,38 +6,20 @@
 """
 from __future__ import annotations
 
-import json
-import sys
-import threading
 from functools import partial
-from pathlib import Path
 
-import cv2
-import numpy as np
-from PySide6.QtCore import Qt, QRect, QPoint, QThread, Signal, QTimer
-from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
-from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 
-from core_engine.ai_pipeline import MODEL_SET_TO_TIER, OcrBox
-from core_engine.db_manager import DBManager, HistoryStorage
-from core_engine.logging_setup import setup_logging, get_logger
+from core_engine.logging_setup import get_logger
 
-from ocr import RapidOcrEngine
-from screenshot import ScreenshotService
-from config import ConfigManager
-from hotkey import HotkeyHost
-from platform_compat import capabilities, scroll_capture_supported
-from platform_compat.fonts import ui_font_family
-from ui.base.theme import apply_theme, resolve_theme, install_system_follow
 from ui.base.widgets import screen_available_geometry
-from ui.windows.selection import SelectionOverlay
-from ui.windows.result_overlay import ResultOverlay
-from appmod.workers import OcrWorker, TableWorker, EngineLoader
 
 log = get_logger("app")
 
 
 class FloatMixin:
+    # 关窗后全量 GC 的最小间隔（秒）。见 _dispose_overlay 的说明。
+    _GC_MIN_INTERVAL = 5.0
+
     @staticmethod
     def _panel_alive(o):
         """判断 QObject 是否仍存活（未被 C++ 侧销毁）。"""
@@ -150,8 +132,8 @@ class FloatMixin:
         """创建贴图窗口 + 纯信息状态栏 + 统一工具栏（均有全局开关）。
 
         数量上限分两类独立管理（见 _trim_overlays）：
-        - 截图贴图（persistent=False）→ [software] max_history_windows，默认 1
-        - 历史贴图（persistent=True，从历史恢复的图）→ [software] max_hist_windows，默认 3
+        - 截图贴图（persistent=False）→ [software] max_shot_windows，默认 1
+        - 历史贴图（persistent=True，从历史恢复的图）→ [software] max_restore_windows，默认 3
         钉图（在 _pins）独立管理不占配额。用户手动关闭窗口会从 _overlays 移除。
         [ui] strip_enabled=false：不建状态栏；toolbar_enabled=false：不建工具栏。
         """
@@ -228,13 +210,9 @@ class FloatMixin:
         """「完成」按钮：保存当前截图到历史（操作过的都应留存），并刷新历史面板。"""
         if ov is None or self.history is None:
             return
-        self._save_record(ov)   # 完成 = 操作，直接落库当前状态
-        # 已打开的历史面板刷新（反映新记录）
-        if self._history_panel is not None and self._panel_alive(self._history_panel):
-            try:
-                self._history_panel.reload()
-            except Exception:  # noqa: BLE001
-                pass
+        # 刷新必须等落库回来：保存已下沉后台线程，直接 reload 会刷在记录入库
+        # **之前**——面板上看不到刚点「完成」的那张图（像是丢了）。
+        self._save_record(ov, on_saved=lambda _rid: self._reload_history_panel())
 
 
     def _on_copied(self, ov, _text):
@@ -281,7 +259,14 @@ class FloatMixin:
             ov._bound_signals = [sig]
 
     def _dispose_overlay(self, ov):
-        """断开窗口的全部信号连接、销毁窗口、回收内存（幂等，可安全多次调用）。"""
+        """断开窗口的全部信号连接、销毁窗口、回收内存（幂等，可安全多次调用）。
+
+        GC 那段是**限频**的：截图 ndarray 动辄几十 MB，关窗后等 Python 按阈值
+        自然回收会多占一会儿内存，所以这里主动收一次；但全量 gen-2 回收要遍历
+        整个堆，**每次关窗都跑一遍**会让「连开关几个贴图窗口」出现周期性卡顿
+        （配额裁剪还会批量走这里）。折中：距上次不足 _GC_MIN_INTERVAL 就跳过 ——
+        上面已经把自引用环断开，引用计数会即时释放，GC 只是补网。
+        """
         # 断开 _bind 登记过的全部信号：消除 partial(.,ov) ↔ ov 持有信号 的
         # 自引用环，否则 Python 引用计数无法归零、C++ 对象不析构、
         # 图像/场景内存不释放。
@@ -299,7 +284,11 @@ class FloatMixin:
         except Exception:  # noqa: BLE001
             pass
         import gc
-        gc.collect()
+        import time as _time
+        now = _time.monotonic()
+        if now - getattr(self, "_last_gc_at", 0.0) >= self._GC_MIN_INTERVAL:
+            self._last_gc_at = now
+            gc.collect()
 
     # ---- 钉图：图片 + 状态栏 + 工具栏一起隐藏，只留 PinDot 钉子 ----
 
@@ -346,16 +335,16 @@ class FloatMixin:
 
     def _trim_overlays(self):
         """按两类配额裁剪 _overlays 窗口（各自从最旧开始）：
-        - 截图贴图（非持久）：[software] max_history_windows，默认 1
-        - 历史贴图（持久，从历史恢复的图）：[software] max_hist_windows，默认 3
+        - 截图贴图（非持久）：[software] max_shot_windows，默认 1
+        - 历史贴图（持久，从历史恢复的图）：[software] max_restore_windows，默认 3
         钉图在 _pins 独立管理，不占贴图配额（取消钉图回列表时按配额裁剪）。
         """
         self._trim_group(
             False, max(1, self.config.getint(
-                "software", "max_history_windows", 1)))
+                "software", "max_shot_windows", 1)))
         self._trim_group(
             True, max(1, self.config.getint(
-                "software", "max_hist_windows", 3)))
+                "software", "max_restore_windows", 3)))
 
 
     def _trim_group(self, persistent: bool, limit: int):

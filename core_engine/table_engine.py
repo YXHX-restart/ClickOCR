@@ -11,8 +11,8 @@
 """
 from __future__ import annotations
 
+import threading
 import time
-from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
@@ -55,30 +55,40 @@ class TableEngine:
         self._model_type = model_type
         self._table: Optional[RapidTable] = None
         self._loaded = False
+        self._load_lock = threading.Lock()   # 保护「惰性加载」，防并发建两套 session
         self._load_elapse = 0.0
 
     # ---- 生命周期 ----
     def load_table_model(self) -> None:
-        """加载 SLANet 表格模型（惰性，幂等）。失败抛 RuntimeError 由调用方降级。"""
+        """加载 SLANet 表格模型（惰性，幂等）。失败抛 RuntimeError 由调用方降级。
+
+        **双检锁**：`_loaded` 是个普通布尔，两个线程同时首次调用时会双双通过
+        `if self._loaded: return`，各建一个 RapidTable session（每个约 150-200MB，
+        且两套 ort session 各占一份显存）。加载本身是秒级操作，锁的代价可忽略。
+        """
         if self._loaded:
             return
-        if not _RT_AVAILABLE:
-            raise RuntimeError("未安装 rapid_table，表格识别不可用（pip install rapid_table）")
-        t0 = time.perf_counter()
-        cfg = RapidTableInput(
-            model_type=ModelType(self._model_type),
-            use_ocr=True,               # 必须 True：use_ocr=False 时不生成 pred_htmls
-            ocr_params={},              # 外部 ocr_results 优先；空参数仅作内部兜底
-            engine_cfg={"use_cuda": self._use_cuda, "use_dml": self._use_dml},
-        )
-        self._table = RapidTable(cfg=cfg)
-        self._load_elapse = time.perf_counter() - t0
-        self._loaded = True
+        with self._load_lock:
+            if self._loaded:                 # 双检：等锁期间别人已加载好
+                return
+            if not _RT_AVAILABLE:
+                raise RuntimeError("未安装 rapid_table，表格识别不可用（pip install rapid_table）")
+            t0 = time.perf_counter()
+            cfg = RapidTableInput(
+                model_type=ModelType(self._model_type),
+                use_ocr=True,               # 必须 True：use_ocr=False 时不生成 pred_htmls
+                ocr_params={},              # 外部 ocr_results 优先；空参数仅作内部兜底
+                engine_cfg={"use_cuda": self._use_cuda, "use_dml": self._use_dml},
+            )
+            self._table = RapidTable(cfg=cfg)
+            self._load_elapse = time.perf_counter() - t0
+            self._loaded = True
 
     def unload_table_model(self) -> None:
         """卸载表格模型释放内存（约 150-200MB）。"""
-        self._table = None
-        self._loaded = False
+        with self._load_lock:                # 与加载互斥：别把刚建好的 session 漏掉
+            self._table = None
+            self._loaded = False
 
     @property
     def is_loaded(self) -> bool:
@@ -93,7 +103,11 @@ class TableEngine:
         """
         if not self._loaded:
             self.load_table_model()
-        if self._table is None:
+        # 取本地快照再用：unload_table_model 可能在**另一线程**把 self._table 置
+        # None（配额裁剪 / 退出流程），原先直接 self._table(image) 会 AttributeError
+        # （'NoneType' object is not callable）。快照让对象在本函数内保持存活。
+        tbl = self._table
+        if tbl is None:
             raise RuntimeError("表格模型不可用")
 
         # 1) 单元格文字：复用外部 OCR（v6-tiny），输出 (boxes, texts, scores) 元组列表
@@ -108,7 +122,7 @@ class TableEngine:
                 ocr_results = [(pts, txts, scores)]
 
         # 2) 表格结构识别 + 文字匹配
-        out = self._table(image, ocr_results=ocr_results)
+        out = tbl(image, ocr_results=ocr_results)
 
         html = (out.pred_htmls or [""])[0]
         cell_boxes = (out.cell_bboxes or [np.empty((0, 4, 2), dtype=np.float32)])[0]
@@ -208,12 +222,39 @@ class TableEngine:
         return "\n".join(lines)
 
     # ---- 元信息 ----
+    @staticmethod
+    def _effective_device(use_cuda: bool, use_dml: bool) -> str:
+        """报告本次构建用的执行设备（cuda / dml / cpu）。
+
+        原先只写 `"cuda" if (self._use_cuda and self._loaded) else "cpu"`：
+        - **DML 用户永远显示 cpu**（`use_dml` 完全没看）—— 这条会经
+          `_ocr_runtime_info` 写进历史记录的「执行记录」字段，等于记错账；
+        - 勾了 cuda 但环境里根本没有 CUDA EP 时也会谎报 cuda
+          （onnxruntime 会静默回退 CPU）。
+
+        这里查一次 onnxruntime 实际可用的 EP（结果由 ORT 内部缓存，开销可忽略）。
+        **注意**：它证明的是「该 EP 在本环境可用」，不等于「本 session 一定拿到了
+        它」—— RapidTable 内部建 session 的 provider 落位我们无法从外部读到。
+        比改前准确得多（DML 不再误报 cpu），但仍不是「实测落位」，故不写成
+        「已验证」。
+        """
+        if not (use_cuda or use_dml):
+            return "cpu"
+        want = "CUDAExecutionProvider" if use_cuda else "DmlExecutionProvider"
+        try:
+            import onnxruntime as ort
+            if want in ort.get_available_providers():
+                return "cuda" if use_cuda else "dml"
+        except Exception:            # noqa: BLE001 ORT 缺失/异常 → 按最保守的报
+            pass
+        return "cpu"
+
     def get_info(self) -> dict:
         return {
             "engine": "RapidTable(SLANet)",
             "model_type": self._model_type,
             "model_size_mb": 6.8,
-            "device": "cuda" if (self._use_cuda and self._loaded) else "cpu",
+            "device": self._effective_device(self._use_cuda, self._use_dml),
             "loaded": self._loaded,
             "load_elapse_s": round(self._load_elapse, 2),
         }

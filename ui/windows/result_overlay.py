@@ -20,25 +20,19 @@ import math
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QEvent, QPoint, QPointF, QRectF, Signal, QTimer
+from PySide6.QtCore import (Qt, QEvent, QPointF, QRect, QRectF, Signal,
+                            QTimer)
 from PySide6.QtGui import (
     QColor, QBrush, QPen, QImage, QPixmap, QPainter, QPainterPath, QPolygonF,
-    QFont, QFontMetricsF,
 )
 from PySide6.QtWidgets import QApplication, QGraphicsView, QGraphicsScene, \
-    QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsItem, QGraphicsTextItem, \
-    QPushButton, QFrame, QWidget
+    QGraphicsPolygonItem, QGraphicsItem, QPushButton, QFrame, QWidget
 
 from config import ConfigManager
 from platform_compat import IS_WINDOWS
-from platform_compat.fonts import ui_font_family
 from ui.base.hotkey_keys import parse_qt_combo
 from ui.base.texts import T
 from ui.base.widgets import screen_available_geometry, desktop_union_available
-from ui.core.table_detect import (          # 表格检测纯算法（无 Qt 依赖）
-    _bbox, _bbox_center, build_blobs,
-    _detect_table_lines, _coords_table_grid, map_cell_texts,
-)
 
 from ui.windows.overlay.anno_session import AnnoMixin
 from ui.windows.overlay.pin_behavior import PinMixin
@@ -199,8 +193,10 @@ class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
         # 网格颜色（[ui] table_border_color，默认绿）
         self._qr_border_color = QColor(*cfg.getcolor(
             "ui", "qr_border_color", (156, 39, 176)))
+        self._qr_border_width = cfg.getint("ui", "qr_border_width", 1)
         self._table_border_color = QColor(*cfg.getcolor(
             "ui", "table_border_color", (90, 220, 120)))
+        self._table_border_width = cfg.getint("ui", "table_border_width", 1)
         # 二维码识别开关（[software] enable_qr，默认关；工具栏按钮/Q 键切换，跨会话记忆）
         self._qr_enabled = cfg.getbool("software", "enable_qr", False)
         # 贴图窗口边框（替代原「图片四周边框」）：在窗口最外层画一圈边框，
@@ -500,7 +496,8 @@ class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
             if getattr(box, "kind", "ocr") == "qr":
                 c = self._qr_border_color
                 item.setBrush(QBrush(QColor(c.red(), c.green(), c.blue(), 22)))
-                item.setPen(QPen(QColor(c.red(), c.green(), c.blue(), 130), 1))
+                item.setPen(QPen(QColor(c.red(), c.green(), c.blue(), 130),
+                                 self._qr_border_width))
             else:
                 item.setBrush(QBrush(QColor(0, 200, 255, 22)))
                 item.setPen(QPen(QColor(0, 200, 255, 130), 1))
@@ -1305,6 +1302,12 @@ class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
             self._toolbar.close()
             self._toolbar.deleteLater()
             self._toolbar = None
+        # 先发 closed 再做资源释放：`_on_overlay_closed` 里「截图无操作也保存」
+        # （[software] save_no_op_close）要读 ov.img 落库，若先把它置 None，
+        # 回调拿到 None 直接 return —— 该设置会静默失效。emit 是同线程直连、
+        # 同步执行，之后的释放动作不受影响（_save_record 已把 numpy 图交给
+        # 后台任务持有引用，置 None 只是丢一个引用，不会提前释放图像）。
+        self.closed.emit()
         # 释放图像与场景资源（修复关闭后内存不回收：4K 图 self.img + QPixmap +
         # QGraphicsScene 图元在关闭时未释放，累积导致 RSS 持续上涨）
         self.img = None
@@ -1321,7 +1324,7 @@ class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
         if getattr(self, "_border_overlay", None) is not None:
             self._border_overlay.deleteLater()
             self._border_overlay = None
-        self.closed.emit()
+        # 注意：closed 已在上方（释放资源之前）发出，此处不再重复 emit。
 
     # ---- 点击穿透（Windows WS_EX_TRANSPARENT，Alt+F 全局热键切换）----
     def toggle_through(self) -> bool:

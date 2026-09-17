@@ -6,12 +6,15 @@
 - 着色：icon(name, color=...) 把渲染结果 tint 成指定颜色（SourceIn 保 alpha）；
   color=None 时按 SVG 默认（currentColor=黑）。
 - 缓存：(name, color, size) → QIcon，含 1x / 2x（devicePixelRatio=2）两档，
-  高 DPI 下不模糊。主题切换时由 ui.base.theme 调 clear_cache() 重建。
+  高 DPI 下不模糊。**有上限并按 LRU 淘汰**（见 _CACHE_MAX）：键里带 color 而
+  color 是自由参数，条目数不受主题槽数量约束。主题切换时由 ui.base.theme 调
+  clear_cache() 重建。
 - 图标缺失时返回空 QIcon（不抛异常，按钮表现为无图标，不崩溃）。
 """
 from __future__ import annotations
 
 import sys
+from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -90,12 +93,23 @@ ICON_PATHS = {
     "pen-glow": "pen-glow.svg",
 }
 
-_cache: dict = {}
+#: 缓存上限（键 = name + color + size）。**必须有上限**：`color` 是自由参数，
+#: 主题槽色只是其中一类调用（另有按状态/按用户选择传色的地方），条目数没有天然边界；
+#: 每个条目含 1x/2x 两张 QPixmap，无上限时会随使用缓慢累积，且只会随主题切换才清空。
+#: 256 条足够覆盖「全部图标 × 主题槽色 × 常用尺寸」，同时把常驻内存压在百 KB 量级。
+_CACHE_MAX = 256
+
+_cache: OrderedDict = OrderedDict()
 
 
 def clear_cache():
     """清空图标缓存（主题切换时调用，下次取图标按新颜色重建）。"""
     _cache.clear()
+
+
+def cache_size() -> int:
+    """当前缓存条目数（诊断与测试用）。"""
+    return len(_cache)
 
 
 def _renderer(name: str):
@@ -133,15 +147,17 @@ def _tint(pm: QPixmap, color: str):
 
 
 def icon(name: str, color: str | None = None, size: int = 20) -> QIcon:
-    """获取单色 SVG 图标（带缓存，含 1x/2x 两档）。
+    """获取单色 SVG 图标（带 LRU 缓存，含 1x/2x 两档）。
 
     - name：ICON_PATHS 中的注册名；
     - color：目标颜色（如 "#ffd54f"）；None = 保持 SVG 默认（currentColor 黑）；
     - size：逻辑像素尺寸（2x 档自动生成）。
     """
     key = (name, color or "", size)
-    if key in _cache:
-        return _cache[key]
+    hit = _cache.get(key)
+    if hit is not None:
+        _cache.move_to_end(key)          # 命中即刷新「最近使用」，供淘汰排序
+        return hit
     r = _renderer(name)
     ic = QIcon()
     if r is not None:
@@ -151,6 +167,8 @@ def icon(name: str, color: str | None = None, size: int = 20) -> QIcon:
         pm2.setDevicePixelRatio(2.0)
         ic.addPixmap(pm2)
     _cache[key] = ic
+    if len(_cache) > _CACHE_MAX:
+        _cache.popitem(last=False)       # 淘汰最久未用的那条
     return ic
 
 

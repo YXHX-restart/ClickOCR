@@ -278,8 +278,6 @@ class ScrollWorker(QThread):
                 else:
                     still = 0
                 prev = frame
-                before = self.stitcher.canvas.shape[0] \
-                    if self.stitcher.canvas is not None else 0
                 if self.stitcher.add(frame):
                     frames += 1
                     self._emit(frames)

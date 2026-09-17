@@ -11,20 +11,15 @@ workers，本文件只保留 App 骨架（初始化 / 托盘 / 单实例 / 窗�
 """
 from __future__ import annotations
 
-import json
 import sys
-import threading
 from functools import partial
-from pathlib import Path
 
-import cv2
-import numpy as np
-from PySide6.QtCore import Qt, QRect, QPoint, QThread, Signal, QTimer
+from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 
-from core_engine.ai_pipeline import MODEL_SET_TO_TIER, OcrBox
+from core_engine.ai_pipeline import MODEL_SET_TO_TIER
 from core_engine.db_manager import DBManager, HistoryStorage
 from core_engine.logging_setup import setup_logging, get_logger
 
@@ -32,12 +27,10 @@ from ocr import RapidOcrEngine
 from screenshot import ScreenshotService
 from config import ConfigManager
 from hotkey import HotkeyHost
-from platform_compat import capabilities, scroll_capture_supported
+from platform_compat import capabilities
 from platform_compat.fonts import ui_font_family
 from ui.base.theme import apply_theme, resolve_theme, install_system_follow
 from ui.base.texts import T
-from ui.windows.selection import SelectionOverlay
-from ui.windows.result_overlay import ResultOverlay
 
 from appmod.engine_mixin import EngineMixin
 from appmod.history_mixin import HistoryMixin
@@ -45,6 +38,7 @@ from appmod.drop_mixin import DropMixin
 from appmod.float_mixin import FloatMixin
 from appmod.capture_mixin import CaptureMixin
 from appmod.workers import ModelSwitchWorker
+from appmod.save_queue import SaveQueue
 
 log = get_logger("app")
 
@@ -94,6 +88,15 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
         setup_logging(logs_dir=self.config.logs_dir)
         # 平台能力矩阵：哪些功能在当前平台不可用，日志里一眼可见
         log.info("平台能力：%s", capabilities())
+        # ---- 单实例检测：放在最前面（只依赖 QApplication + 日志）----
+        # 原先在 __init__ 末尾才检测：第二实例此时已经跑完主题、OCR 引擎、数据库、
+        # 托盘菜单、全局热键注册 —— 唯一可见效果是启动变慢，外加一次多余的
+        # 热键注册（与既有实例竞争同一个键）。此处提前返回即可。
+        self.is_second = False
+        self._single_failed = None
+        self._check_single()
+        if self.is_second:
+            return
         # ---- UI 主题（明/暗/跟随系统）----
         apply_theme(self.app, resolve_theme(self.config))
         install_system_follow(self.app, self.config)
@@ -169,10 +172,15 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
                     "software", "history_max_count", 50))
             log.info("数据库就绪: %s（vec0=%s）",
                      self.config.db_path, self.db.vec0_available)
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             log.exception("数据库初始化失败，历史记录功能禁用")
             self.db = None
             self.history = None
+        # 「编码 + 落库」的后台队列（见 appmod/save_queue）：截图/收藏/标注路径
+        # 的保存不再占 UI 线程。history 为 None 时队列仍建得出来，落库调用方
+        # （_save_record）本就有 history 判空守卫。
+        self._saveq = SaveQueue(self.history, self._encode_image_pair)
+        self._log_effective_config()
 
         self.tray = self._build_tray()
         self.hotkey = HotkeyHost()
@@ -221,8 +229,7 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
         self._history_panel = None
         self._history_panels = []    # 已打开的历史面板（上限控制，默认 1 个）
         self._settings_panel = None
-        self.is_second = False
-        self._check_single()
+        # 单实例检测已在 __init__ 开头完成（见那里的说明），此处不再重复
         # 退出时停掉常驻 OCR 工作线程（避免 QThread 在解释器销毁时被强杀）
         self.app.aboutToQuit.connect(self._on_quit)
 
@@ -236,14 +243,20 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
         故失败先清残留重试一次，仍失败则记录 _single_failed，由 run() 提示并退出。
         """
         self._single_failed = None
+        # 显式关掉探测用的本地 socket：它是无父的临时对象，不关就只能等 GC
+        # （连接态句柄会一直挂着，直到下一次 GC 才释放）
         sock = QLocalSocket()
-        sock.connectToServer(self.INSTANCE_NAME)
-        if sock.waitForConnected(300):
-            sock.write(self.INSTANCE_PING)      # 协议见 INSTANCE_PING
-            sock.flush()
-            sock.waitForBytesWritten(300)
-            self.is_second = True
-            return
+        try:
+            sock.connectToServer(self.INSTANCE_NAME)
+            if sock.waitForConnected(300):
+                sock.write(self.INSTANCE_PING)      # 协议见 INSTANCE_PING
+                sock.flush()
+                sock.waitForBytesWritten(300)
+                self.is_second = True
+                return
+            sock.disconnectFromServer()
+        finally:
+            sock.close()
         self.is_second = False
         self.server = QLocalServer()
         if self.server.listen(self.INSTANCE_NAME):
@@ -310,7 +323,11 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
     def _build_tray(self) -> QSystemTrayIcon:
         from ui.base.texts import T
         tray = QSystemTrayIcon(_make_icon(), self.app)
+        # 必须持引用：QMenu 无 parent 时局部变量出作用域即被 C++ 侧析构，
+        # 托盘仍持其指针 → 右键菜单悬垂指针（点击崩溃）。
+        # 不能 parent 给 tray（QSystemTrayIcon 非 QWidget），故挂到 App 实例上。
         menu = QMenu()
+        self._tray_menu = menu
         a_cap = QAction(T("tray.capture", "截图"), self.app)
         a_cap.triggered.connect(self.start_capture)
         a_hist = QAction(T("tray.history", "历史记录"), self.app)
@@ -344,7 +361,7 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
                 QSystemTrayIcon.Warning, 3000)
             return
         # 单例：历史面板只应有一个窗口。已打开则聚焦现有窗口，避免重复创建。
-        # （max_history_windows 只约束普通贴图窗口，与历史面板无关）
+        # （max_shot_windows 只约束普通贴图窗口，与历史面板无关）
         #  CardWindow.close() 仅隐藏窗口、不销毁，引用长期保留，故用销毁信号清理
         self._history_panels = [p for p in self._history_panels
                                 if p is not None and self._panel_alive(p)]
@@ -368,6 +385,7 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
             cards=self.config.getint("ui", "history_visible_cards", 5),
             on_favorite_changed=self._sync_favorite,
             on_files_dropped=self._on_history_files_dropped,
+            on_drop_ocr_changed=self._sync_drop_ocr_ui,
             config=self.config)
         self._history_panels.append(panel)
         self._history_panel = panel
@@ -387,13 +405,67 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
 
     # ---- M2·δ：拖图片进历史窗口 → 复制入库 + 后台序列 OCR ----
 
+    def _log_effective_config(self):
+        """一行打好「生效配置摘要」——排查「配置没生效」类问题的第一现场。
+
+        这几个值的共同点是**都是推导出来的**：`screenshots_dir` 若是相对路径要
+        按 app_root 解析、默认值有「出厂模板 + 代码默认」两处来源、`ocr_device`
+        会在运行时按可用 EP 回落。只看 config.ini 得不出结论，于是用户报
+        「截图不知道存哪去了 / 历史怎么是空的」时，第一个该看的东西日志里没有
+        （原先只记了 db_path）。这里把**解析后的绝对路径**与**当前库内条数**
+        一并落日志，一眼可判「是配置没生效，还是数据没写进去」。
+        """
+        shots = self.config.get_screenshots_dir()
+        try:
+            n = self.history.count() if self.history is not None else None
+        except Exception:            # noqa: BLE001 统计失败不该影响启动
+            n = None
+        log.info(
+            "生效配置：ocr_device=%s（配置值 %s）| ocr_model=%s | screenshots_dir=%s"
+            " | db=%s（%s 条记录）| 主题=%s",
+            self.accel, self.config.get("software", "ocr_device", "cpu"),
+            self.config.get("software", "ocr_model", "v6-tiny"),
+            shots, self.config.db_path, "?" if n is None else n,
+            resolve_theme(self.config))
+
+    def _sync_drop_ocr_ui(self):
+        """「拖入图片后自动 OCR」两处开关的显示同步。
+
+        该开关有两个入口（历史面板标签栏角标 / 软件设置勾选框），唯一真值源是
+        `[software] drop_ocr_auto`。原先是两处各自「构建时读一次、改动时写回」，
+        典型的 last-writer-wins：在设置里改完，历史面板角标还是旧的；在角标上
+        改完，设置窗的勾选框也不动 —— 用户以为没生效，再去点一遍反而又改回去。
+
+        现在任一处改完都回调本方法，把两处显示刷成与配置一致。刷新方**先写配置
+        再通知**，所以这里只需重读配置；两个同步方法内部都屏蔽信号，不会与
+        toggled/changed 形成回路。
+        """
+        panel = self._history_panel
+        if panel is not None and self._panel_alive(panel):
+            try:
+                panel.sync_drop_ocr_button()
+            except Exception:        # noqa: BLE001 同步失败不影响开关本身
+                log.exception("同步历史面板「拖入OCR」角标失败")
+        sp = getattr(self, "_settings_panel", None)
+        sp_sync = getattr(sp, "sync_drop_ocr_checkbox", None)
+        if sp_sync is not None:
+            try:
+                sp_sync()
+            except Exception:        # noqa: BLE001
+                log.exception("同步设置页「拖入OCR」勾选框失败")
+
     def open_settings(self):
         from ui.windows.settings_panel import SettingsPanel
         if self._settings_panel is None:
             self._settings_panel = SettingsPanel(
                 self.config, self.hotkey, self.history, tray=self.tray,
                 on_clear_history=self._clear_all_history,
-                on_model_changed=self._on_model_changed)
+                on_model_changed=self._on_model_changed,
+                on_drop_ocr_changed=self._sync_drop_ocr_ui)
+        else:
+            # 复用已存在的面板：先把「拖入OCR」勾选框刷成当前配置 —— 用户可能
+            # 刚在历史面板角标上改过，而本面板上次保存后一直停在旧状态
+            self._sync_drop_ocr_ui()
         self._settings_panel.show()
         self._settings_panel.raise_()
         self._settings_panel.activateWindow()
@@ -472,10 +544,14 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
     def run(self):
         if self.is_second:
             print("[ClickOCR] 已在运行中：已聚焦已有窗口（若需要全新启动，请先右键托盘\"退出\"）。")
-            self.tray.showMessage(
-                "ClickOCR", T("app.already_running", "已在运行中"),
-                QSystemTrayIcon.Information, 2000
-            )
+            # 第二实例在 __init__ 开头就返回了（未建托盘），故托盘提示要容错：
+            # 唤起效果由既有实例的截图反馈承担，这里只是补充提示。
+            tray = getattr(self, "tray", None)
+            if tray is not None:
+                tray.showMessage(
+                    "ClickOCR", T("app.already_running", "已在运行中"),
+                    QSystemTrayIcon.Information, 2000
+                )
             sys.exit(0)
             return
         # 单实例监听失败（见 _check_single）：不能再往下跑，否则会出现两个托盘
@@ -535,6 +611,21 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
         延迟到解释器 shutdown，CUDA context 释放滞后（NVIDIA 服务侧句柄残留）。
         这里主动释放，确保退出时 GPU 资源立即归还。
         """
+        # 先收干在途的「编码 + 落库」任务：保存已下沉后台，直接退会丢掉刚
+        # 截的图（用户看到「已保存」但库里没有）。必须**先 flush 再停线程**，
+        # 反过来的话队列里的任务没人处理了。
+        sq = getattr(self, "_saveq", None)
+        if sq is not None:
+            sq.stop(3000)
+        # 设置页也有一次性后台线程（GPU 探测 / 清空历史）：不 wait 就随对象
+        # 析构会触发 "QThread: Destroyed while thread is still running"
+        sp = getattr(self, "_settings_panel", None)
+        sp_stop = getattr(sp, "stop_workers", None)
+        if sp_stop is not None:
+            try:
+                sp_stop()
+            except Exception:        # noqa: BLE001 收尾失败不阻断退出
+                log.exception("收尾设置页后台线程失败")
         # 常驻线程全部纳入停止范围：除三个识别 worker 外还有 EngineLoader
         # （启动即退出的场景下模型仍在后台加载，不 wait 会触发
         # "QThread: Destroyed while thread is still running"）
@@ -561,7 +652,13 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
         try:
             eng = getattr(self, "engine", None)
             if eng is not None:
-                eng._engine = None
+                # 走公开接口：原先直接 `eng._engine = None` 捅私有属性，包装层
+                # 一旦改名这里就静默什么都不做（显存要等进程结束才归还）。
+                _unload = getattr(eng, "unload", None)
+                if _unload is not None:
+                    _unload()
+                else:                    # 兼容非 RapidOcrEngine 的替身实现
+                    eng._engine = None
             if getattr(self, "table_engine", None) is not None:
                 self.table_engine.unload_table_model()
         except Exception:  # noqa: BLE001

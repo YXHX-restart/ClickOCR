@@ -6,32 +6,13 @@
 """
 from __future__ import annotations
 
-import json
-import sys
-import threading
-from functools import partial
-from pathlib import Path
 
-import cv2
-import numpy as np
-from PySide6.QtCore import Qt, QRect, QPoint, QThread, Signal, QTimer
-from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
-from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QSystemTrayIcon
 
-from core_engine.ai_pipeline import MODEL_SET_TO_TIER, OcrBox
-from core_engine.db_manager import DBManager, HistoryStorage
-from core_engine.logging_setup import setup_logging, get_logger
+from core_engine.logging_setup import get_logger
 
-from ocr import RapidOcrEngine
-from screenshot import ScreenshotService
-from config import ConfigManager
-from hotkey import HotkeyHost
-from platform_compat import capabilities, scroll_capture_supported
-from platform_compat.fonts import ui_font_family
-from ui.base.theme import apply_theme, resolve_theme, install_system_follow
 from ui.base.texts import T
-from ui.windows.selection import SelectionOverlay
-from ui.windows.result_overlay import ResultOverlay
 from appmod.workers import OcrWorker, TableWorker, EngineLoader
 
 log = get_logger("app")

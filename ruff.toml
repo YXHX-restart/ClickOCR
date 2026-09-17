@@ -1,0 +1,35 @@
+# ruff 配置 —— 「约定已建立但无执法者」的执法者。
+#
+# 只启用**能证明是问题**的规则，不启用风格类（行宽/引号/import 排序）：
+# 那类改动量大、收益低，还会淹没真信号。当前选中的两类各有用处：
+#
+#   F   pyflakes：未使用的导入/变量、重定义、**未定义名字**（F821）
+#       —— 2026-09-17 首次全仓跑时，F821 立刻抓出一处真缺陷：
+#       `result_overlay._clamp_bounds() -> QRect` 用了没导入的 QRect
+#       （靠 `from __future__ import annotations` 才没炸）。这正是
+#       「只能靠人记」的那类问题。
+#   E9 语法/IO 错误。
+#   B   flake8-bugbear：只开了实测有真信号的两条（见 extend-select）——
+#       B905 `zip()` 缺 `strict=`（静默截断！）、B007 未使用的循环变量。
+#
+# 跑法：`.venv\Scripts\python.exe -m ruff check`
+# 门禁：`tests/test_lint.py`（未装 ruff 时跳过并提示）
+
+target-version = "py313"
+
+exclude = [
+    ".git",
+    ".venv",
+    ".venv-*",
+    "__pycache__",
+    "build",
+    "dist",
+    "wheels",
+    "resources",
+]
+
+[lint]
+# F = pyflakes；E9 = 语法错误；B = bugbear。
+# 实测 B 在本仓只产出 B007 / B905 各若干条（已全部处理），故整组开启也不吵；
+# 若日后某条 B 规则开始刷屏，**再按具体情况收窄**，不要预先写一堆 ignore。
+select = ["F", "E9", "B"]

@@ -164,7 +164,6 @@ class TextSelectMixin:
             parts = []
             for pos in range(o0, o1 + 1):
                 orig = self.box_order[pos]
-                g = self.geom[orig]
                 txt = self.boxes[orig].text
                 if pos == o0 and pos == o1:
                     seg = txt[c0:c1]

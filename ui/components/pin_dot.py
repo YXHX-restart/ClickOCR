@@ -10,8 +10,8 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QEvent, Signal, QTimer
-from PySide6.QtGui import QPainter, QColor, QFont
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QPainter, QColor
 from PySide6.QtWidgets import QLabel, QApplication
 
 from ui.base.texts import T

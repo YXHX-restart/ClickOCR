@@ -6,41 +6,26 @@
 """
 from __future__ import annotations
 
-import json
-import sys
-import threading
-from functools import partial
 from pathlib import Path
 
-import cv2
-import numpy as np
-from PySide6.QtCore import Qt, QRect, QPoint, QThread, Signal, QTimer
-from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
-from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
+from PySide6.QtWidgets import QSystemTrayIcon
 
-from core_engine.ai_pipeline import MODEL_SET_TO_TIER, OcrBox
-from core_engine.db_manager import DBManager, HistoryStorage
-from core_engine.logging_setup import setup_logging, get_logger
+from core_engine.logging_setup import get_logger
 
-from ocr import RapidOcrEngine
-from screenshot import ScreenshotService
-from config import ConfigManager
-from hotkey import HotkeyHost
-from platform_compat import capabilities, scroll_capture_supported
-from platform_compat.fonts import ui_font_family
-from ui.base.theme import apply_theme, resolve_theme, install_system_follow
 from ui.base.texts import T
-from ui.windows.selection import SelectionOverlay
-from ui.windows.result_overlay import ResultOverlay
-from appmod.workers import (OcrWorker, TableWorker, EngineLoader,
-                            DropImportWorker)
+from appmod.workers import (OcrWorker, DropImportWorker)
+# 统一解码实现下沉在 core_engine（桌面端/服务端共用，含 HEIC/AVIF + EXIF 纠正）。
+# 原先这里是「try 导入 + 失败回退 cv2.imdecode」的降级版，而 history_mixin 是
+# 直连导入 —— 同一语义两套容错：
+#   1) core_engine 是本项目**必需**的内置包，main.py 在缺失时直接 SystemExit
+#      （「启动失败：找不到内置 core_engine 包」），所以这个 fallback 永远不会
+#      被走到，只是「看起来更稳」；
+#   2) 真走到才糟：cv2.imdecode 读不了 heic/heif/avif（正是当初引入统一解码要
+#      解决的场景），于是「降级」会静默变成「这些格式的图拖进来全部失败」。
+# 遮蔽型债务的标准形态 —— 删掉，与 history_mixin 一致直连导入。
+from core_engine.image_decode import decode_image_bytes as _decode_image_bytes
 
 log = get_logger("app")
-try:  # 统一解码实现下沉在 core_engine（桌面端/服务端共用，含 HEIC/AVIF + EXIF 纠正）
-    from core_engine.image_decode import decode_image_bytes as _decode_image_bytes
-except Exception:  # noqa: BLE001 core_engine 缺失时退化：仅支持 cv2 原生格式
-    def _decode_image_bytes(raw) -> "np.ndarray | None":
-        return cv2.imdecode(raw, cv2.IMREAD_COLOR)
 
 
 
@@ -107,11 +92,7 @@ class DropMixin:
         if not added and not touched:
             return
         # 立即刷新面板：新增记录以「待识别」(无文字) 态出现；置顶记录移到最前
-        if self._history_panel is not None and self._panel_alive(self._history_panel):
-            try:
-                self._history_panel.reload()
-            except Exception:  # noqa: BLE001
-                pass
+        self._reload_history_panel()
         # 有记录因同名同大小被置顶时，给一次轻提示
         if touched > 0:
             self._notify_dropped_touched(touched)

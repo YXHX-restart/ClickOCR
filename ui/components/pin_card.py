@@ -12,6 +12,9 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QFrame)
 
 from ui.base.texts import T
+from core_engine.logging_setup import get_logger
+
+log = get_logger("pincard")
 
 
 class PinCard(QWidget):
@@ -55,20 +58,32 @@ class PinCard(QWidget):
         root.addWidget(card)
 
     def set_image(self, img_bgr: np.ndarray):
-        """设置缩略图（BGR ndarray）。"""
+        """设置缩略图（BGR ndarray）。
+
+        **QImage 必须显式 copy()**：`QImage(buffer, ...)` 只是**借用**那个内存
+        （不拷贝），而 `rgb` 是本函数的局部变量 —— QImage 一旦活过本函数就是在
+        读已析构的缓冲。原先只靠 `QPixmap.fromImage()` 的隐式深拷贝侥幸安全：
+        「当下游行为」兜着，日后任何一处改成继续使用这个 QImage（缩放/裁剪）就
+        读到野内存。copy() 让 QImage 自己持有一份数据，不再依赖下游。
+        """
         try:
             import cv2
             h, w = img_bgr.shape[:2]
             tw = 120
             th = max(1, int(round(h * tw / w)))
             thumb = cv2.resize(img_bgr, (tw, th), interpolation=cv2.INTER_AREA)
-            rgb = cv2.cvtColor(thumb, cv2.COLOR_BGR2RGB)
+            # ascontiguousarray：cv2 输出通常已连续，但 strides 传入 QImage 后
+            # 若被改成非连续视图（切片/转置），行距假设就会错位
+            rgb = np.ascontiguousarray(cv2.cvtColor(thumb, cv2.COLOR_BGR2RGB))
             qimg = QImage(rgb.data, rgb.shape[1], rgb.shape[0],
-                          rgb.strides[0], QImage.Format_RGB888)
+                          rgb.strides[0], QImage.Format_RGB888).copy()
             pm = QPixmap.fromImage(qimg)
             self.thumb.setPixmap(pm.scaled(
                 self.thumb.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        except Exception:
+        except Exception as e:            # noqa: BLE001 缩略图失败 → 占位文字
+            # 原先 `except Exception:` 无日志：钉图缩略图一直显示「无图」时
+            # 没有任何线索（是解码失败、OpenCV 缺失还是尺寸异常）
+            log.warning("钉图缩略图生成失败：%s", e, exc_info=True)
             self.thumb.setText(T("hist.no_img", "无图"))
 
     def set_info(self, text: str, info: str):

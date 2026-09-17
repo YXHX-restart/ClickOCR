@@ -7,8 +7,7 @@ import unittest
 
 import hotkey
 from ui.base.hotkey_keys import (MODIFIER_TOKENS, parse_qt_combo, qt_to_token,
-                                 split_combo, token_display, token_to_qt,
-                                 token_to_vk)
+                                 split_combo, token_display, token_to_vk)
 
 
 class TestTokenMaps(unittest.TestCase):

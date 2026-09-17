@@ -10,17 +10,20 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import (Qt, QSize, QUrl, QPoint, QMimeData,
-                             QByteArray, QBuffer, QIODevice, QTimer, QRectF)
-from PySide6.QtGui import (QPixmap, QDrag, QImage, QPainter, QCursor, QAction)
+                             QByteArray, QBuffer, QIODevice, QTimer)
+from PySide6.QtGui import (QPixmap, QDrag, QImage, QCursor, QAction)
 from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLineEdit, QListWidget,
                                QListWidgetItem, QLabel, QPushButton, QFrame,
                                QWidget, QTabWidget, QApplication, QMenu,
-                               QGraphicsScene, QGraphicsPixmapItem, QToolTip)
+                               QToolTip)
 
+from core_engine.logging_setup import get_logger
 from ui.base.card_window import CardWindow
 from ui.base.texts import T
 from ui.base.widgets import screen_available_geometry
 from ui.components.annotation import anno_from_json, render_annotated_image
+
+log = get_logger("history")
 
 
 def _group_name(ts: float) -> str:
@@ -302,7 +305,8 @@ class _DragImageLabel(QLabel):
 class HistoryPanel(CardWindow):
     def __init__(self, history, on_restore, screenshots_dir=None,
                  thumb_width: int = 90, width: int = 620, cards: int = 5,
-                 on_favorite_changed=None, on_files_dropped=None, config=None):
+                 on_favorite_changed=None, on_files_dropped=None, config=None,
+                 on_drop_ocr_changed=None):
         super().__init__(title=T("hist.title", "历史记录"), with_close=True)
         self._cards = max(1, min(30, cards))
         self._cfg = config
@@ -319,6 +323,8 @@ class HistoryPanel(CardWindow):
         self._on_restore = on_restore
         self._on_favorite_changed = on_favorite_changed
         self._on_files_dropped = on_files_dropped
+        # App 回调：本面板改了「拖入图片后自动 OCR」→ 请同步设置窗的勾选框
+        self._on_drop_ocr_changed = on_drop_ocr_changed
         # 启用拖放：拖图片进历史窗口 → 复制入库 + 后台 OCR
         self.setAcceptDrops(True)
         self._thumb_dir = Path(screenshots_dir) / "thumb" if screenshots_dir \
@@ -328,6 +334,10 @@ class HistoryPanel(CardWindow):
         self._batch_depth = 0           # >0 时抑制 reload（批量操作合并刷新）
         self._batch_dirty = False       # 抑制期间是否发生过变更
         self._last_sel = {}             # 各列表上次的选中状态（增量刷样式）
+        # 去抖定时器：把短时间内的多次「推送刷新」合并成一次（见 reload_soon）
+        self._reload_timer = QTimer(self)
+        self._reload_timer.setSingleShot(True)
+        self._reload_timer.timeout.connect(self.reload)
 
         self.card_lay.setSpacing(10)
 
@@ -426,7 +436,6 @@ class HistoryPanel(CardWindow):
     def _layout_handles(self):
         m, c = _ResizeHandle.MARGIN, _ResizeHandle.CORNER
         w, h = self.width(), self.height()
-        H = _ResizeHandle
         # 四条边（避开角，避免方向歧义）
         self._handles[0].setGeometry(0, c, m, h - 2 * c)          # 左
         self._handles[1].setGeometry(w - m, c, m, h - 2 * c)      # 右
@@ -471,20 +480,72 @@ class HistoryPanel(CardWindow):
             self._cap_btn.raise_()
 
     def _on_drop_ocr_auto_toggled(self, checked: bool):
-        """拖入图片后自动 OCR 开关：写入 [software] drop_ocr_auto。"""
+        """拖入图片后自动 OCR 开关：写入 [software] drop_ocr_auto。
+
+        写完**通知 App 同步另一处 UI**（软件设置里的同名勾选框）。两处开关
+        同源同值，只写配置不通知的话，另一处会停在旧状态（last-writer-wins）：
+        用户在设置里改完、回面板看到角标没变，以为没生效，再点一下反而又改回去。
+        """
         if self._cfg is None:
             return
         self._cfg.cp.set("software", "drop_ocr_auto",
                          "true" if checked else "false")
         self._cfg.save()
+        if self._on_drop_ocr_changed is not None:
+            try:
+                self._on_drop_ocr_changed()
+            except Exception:        # noqa: BLE001 同步失败不影响开关本身
+                log.exception("同步「拖入OCR」开关失败")
 
-    def closeEvent(self, e):
-        # 记忆最终尺寸到 config.ini（仅隐藏也会触发 closeEvent）
-        if self._cfg is not None:
+    def sync_drop_ocr_button(self):
+        """按配置刷新角标状态（**屏蔽信号**，不会回写配置）。
+
+        两个时机调用：面板每次显示（覆盖「在设置里改完、再打开面板」这条路径）、
+        设置页保存后由 App 回调（覆盖「设置窗开着的同时改面板」）。
+        """
+        btn = getattr(self, "_cap_btn", None)
+        if btn is None or self._cfg is None:
+            return
+        on = self._cfg.getbool("software", "drop_ocr_auto", True)
+        if btn.isChecked() == on:
+            return
+        btn.blockSignals(True)
+        try:
+            btn.setChecked(on)
+        finally:
+            btn.blockSignals(False)
+
+    def showEvent(self, e):
+        """每次显示时按配置刷新角标。
+
+        本面板是热键 toggle 的常驻窗口，用户很可能在「设置」里改过开关之后
+        再打开它 —— 只在构造时读一次配置，显示的就会是旧状态。
+        """
+        self.sync_drop_ocr_button()
+        super().showEvent(e)
+
+    def _remember_size(self):
+        """把当前尺寸记进 config.ini（写失败只告警，不得把关闭流程带崩）。"""
+        if self._cfg is None:
+            return
+        try:
             self._cfg.cp.set("ui", "history_panel_width", str(self.width()))
             self._cfg.cp.set("ui", "history_panel_height", str(self.height()))
             self._cfg.save()
-        super().closeEvent(e)
+        except Exception as e:               # noqa: BLE001 磁盘/权限问题
+            from core_engine.logging_setup import get_logger
+            get_logger("history").warning("历史面板尺寸记忆失败：%s", e)
+
+    def hideEvent(self, e):
+        """隐藏时记忆尺寸。
+
+        原先只挂在 `closeEvent` 上并注释「仅隐藏也会触发 closeEvent」—— **不成立**：
+        Qt 里 `hide()` 不触发 closeEvent，而本面板的主要用法就是热键 toggle（hide/show），
+        于是尺寸经常记不下来，重启后偶发回到默认大小。
+        `close()` 会先 hide（hideEvent 必然先于 closeEvent 到达），故一处即可覆盖两种收尾。
+        """
+        self._remember_size()
+        super().hideEvent(e)
 
     # ---- 数据 ----
     @staticmethod
@@ -538,6 +599,42 @@ class HistoryPanel(CardWindow):
         cache[key] = pm
         return pm
 
+    def _drop_thumbs(self, rids):
+        """删除记录后丢掉对应的缩略图缓存条目。
+
+        键是 (路径, mtime_ns, 宽, 高)，被删掉的文件不会再被请求 —— 不主动丢就只能
+        等 400 条上限被动淘汰：每条是缩放后的 QPixmap（几十 KB），删一批记录后
+        这部分内存会白占很久（§6.2）。**必须在 `history.delete()` 之前取路径**，
+        删完就查不到 screenshot_path 了。
+        """
+        if not self._thumb_cache or not rids:
+            return
+        dead = set()
+        for rid in rids:
+            rec = self._history.get(rid)
+            if rec:
+                # 用与 _cached_thumb 填充时**同一个**构造函数（原实现这里自己
+                # 拼成 `screenshots/<name>`，而缓存键是 `thumb/<name>` ——
+                # 两套键永不相等，删除记录后缩略图缓存从不失效、白占到 400 条
+                # 上限才被动淘汰）。
+                dead.add(str(self._thumb_path(rec)))
+        if not dead:
+            return
+        for key in [k for k in self._thumb_cache if k[0] in dead]:
+            self._thumb_cache.pop(key, None)
+
+    def _thumb_path(self, rec) -> Path:
+        """记录 → 缩略图文件路径（缓存键与失效判断的**唯一**构造函数）。
+
+        收敛点：填充（_cached_thumb 调用处）与失效（_drop_thumbs）必须用同一
+        份路径算式，否则「删了记录但缓存还在」这种静默失效会复发。
+        """
+        return self._thumb_dir / Path(rec["screenshot_path"]).name
+
+    def drop_thumb_cache(self):
+        """整表作废缩略图缓存（清空历史后调用：记录全没了，缓存没有留存价值）。"""
+        self._thumb_cache.clear()
+
     def _list_limit(self) -> int:
         """列表/搜索上限：与「历史保留条数」联动（保底 200）。
 
@@ -583,6 +680,21 @@ class HistoryPanel(CardWindow):
         # 列表已重建（行 widget 全新、selected 属性复位）：清掉选中缓存，
         # 否则下次选中变化的差集会与陈旧状态比对而漏刷高亮
         self._last_sel.clear()
+
+    def reload_soon(self, delay_ms: int = 80):
+        """**去抖**刷新：把短时间内的多次刷新请求合并成一次。
+
+        与 `reload()` 的分工：
+        - `reload()` 立即刷新 —— 显式用户动作（搜索/删除/清空/首次打开面板），
+          操作后必须马上看到结果，去抖只会让人以为没生效；
+        - `reload_soon()` 用于**推送**路径 —— 每张图识别完、标注落库、收藏切换、
+          拖放批量结束、点「完成」。这些调用点单次都很廉价，但批量场景一秒钟能
+          触发几十次，而每次都是「多条 SQL + 6 个列表全量 clear 重建」。
+
+        去抖后：一连串推送只在最后一次之后 80ms 刷一次，用户感知不到延迟，
+        但重建次数从 N 次降到 1 次。
+        """
+        self._reload_timer.start(delay_ms)
 
     # ---- 拖放：拖图片进窗口 → 复制入库 + 后台 OCR ----
     @staticmethod
@@ -694,7 +806,7 @@ class HistoryPanel(CardWindow):
         thumb.setAlignment(Qt.AlignCenter)
         thumb.setToolTip(T("hist.drag_out_tip",
                            "拖拽图片到桌面 / 微信 / QQ / WorkBuddy 等发送"))
-        p = self._thumb_dir / Path(r["screenshot_path"]).name
+        p = self._thumb_path(r)
         pm = self._cached_thumb(p, thumb.size())
         if not pm.isNull():
             thumb.setPixmap(pm)
@@ -1068,6 +1180,7 @@ class HistoryPanel(CardWindow):
         """删除单条记录（卡片删除按钮 / 右键菜单入口）：先确认再删。"""
         if not self._confirm_delete([rid]):
             return
+        self._drop_thumbs([rid])            # 先丢缓存：删完就取不到 screenshot_path
         self._history.delete(rid)
         self.reload()
 
@@ -1078,6 +1191,7 @@ class HistoryPanel(CardWindow):
         # _confirm_delete（只选中一条时按单条文案提示，同样需要确认）。
         if not self._confirm_delete(rids):
             return
+        self._drop_thumbs(rids)             # 先丢缓存：删完就取不到 screenshot_path
         for rid in rids:
             self._history.delete(rid)
         self.reload()                       # 重建列表，选区自然清空

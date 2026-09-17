@@ -16,7 +16,7 @@ import time
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QImage, QPixmap, QClipboard
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QWidget, QPushButton, QListWidget, QListWidgetItem,
     QLabel, QVBoxLayout, QHBoxLayout, QMessageBox,
@@ -28,8 +28,17 @@ from ui.base.texts import T
 
 
 class HotkeyThread(QThread):
-    """全局热键监听（Ctrl+Shift+R），触发时通过信号回到主线程。"""
+    """全局热键监听（Ctrl+Shift+R），触发时通过信号回到主线程。
+
+    **必须能被停掉**：`pynput` 的 Listener 一旦 join 就是永久阻塞，原先没有停止
+    路径 —— 每打开一次 dev 窗口就多一个全局键盘钩子线程，重复打开会不断累积
+    （§2.4-B2）。现在 `stop()` 会停监听并等线程收尾，窗口关闭时调用。
+    """
     triggered = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._listener = None
 
     def run(self):
         from pynput import keyboard
@@ -47,8 +56,20 @@ class HotkeyThread(QThread):
         def on_release(k):
             pressed.discard(k)
 
-        with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
-            listener.join()
+        listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        self._listener = listener
+        listener.start()
+        listener.join()                  # 直到 stop() 调 listener.stop()
+
+    def stop(self):
+        """停止监听并等线程收尾（幂等，可重复调用）。"""
+        lst = self._listener
+        if lst is not None:
+            try:
+                lst.stop()
+            except Exception:            # noqa: BLE001 已停/句柄失效：忽略
+                pass
+        self.wait(2000)
 
 
 class MainWindow(QWidget):
@@ -91,6 +112,13 @@ class MainWindow(QWidget):
         self.hk.start()
 
     # ---- 主线程捕获 ----
+    def closeEvent(self, e):
+        """关闭窗口时停掉热键监听线程（否则全局键盘钩子会随每次打开累积）。"""
+        hk = getattr(self, "hk", None)
+        if hk is not None:
+            hk.stop()
+        super().closeEvent(e)
+
     def do_capture(self):
         self.status.setText(T("dev.capturing", "截图中 ..."))
         QApplication.processEvents()

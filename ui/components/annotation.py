@@ -13,19 +13,10 @@
 from __future__ import annotations
 
 import copy
-import math
 
-from PySide6.QtCore import Qt, QPointF, QRectF, Signal
-from PySide6.QtGui import (QColor, QPen, QBrush, QFont, QPainterPath,
-                           QPolygonF, QPixmap, QImage, QPainter)
-from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QPushButton,
-                               QLabel, QFrame, QSlider, QSpinBox,
-                               QButtonGroup, QFontComboBox, QComboBox,
-                               QGraphicsRectItem, QGraphicsLineItem,
-                               QGraphicsPathItem, QGraphicsPolygonItem,
-                               QGraphicsPixmapItem, QGraphicsEllipseItem,
-                               QGraphicsTextItem, QGraphicsItemGroup,
-                               QGraphicsScene, QStyleOptionGraphicsItem)
+from PySide6.QtCore import Qt, QPointF, QRectF
+from PySide6.QtGui import (QColor, QPen, QBrush, QFont, QPixmap)
+from PySide6.QtWidgets import (QGraphicsRectItem, QGraphicsPixmapItem, QGraphicsTextItem, QGraphicsItemGroup)
 
 from platform_compat.fonts import ui_font_family
 
@@ -54,7 +45,8 @@ from .anno.items import (
     _line_zigzag_item, _bubble_path, _RectElement, _ArrowElement,
     _PenElement, _LineElement, _MosaicElement, _MosaicPenElement,
     _TextElement, _NumElement, _ItemFactory, TOOLS, TOOL_LABELS,
-    TOOL_TIPS, render_annotated_image, _hex, _make_mosaic_pixmap
+    TOOL_TIPS, render_annotated_image, _hex, _make_mosaic_pixmap,
+    _mosaic_cell_of,
 )
 from .anno.popups import (
     _ColorSizeRow, _AnnoPopupBase,
@@ -78,6 +70,7 @@ class AnnotationSession:
         self.font_bold = False
         self.font_italic = False
         self.mosaic_mode = "rect"   # 马赛克模式：pen(画笔)/rect(框选)/textbox(文字框)
+        self._mosaic_cells = set()  # 画笔预览已画过的格子（同一格不重复建图元）
         self.num_start = 1          # 序号标注最低起始序号
         self.num_size = 18          # 序号圆圈/数字尺寸
         self.num_style = "circle"   # 序号样式：circle/circle_o/square/paren/plain
@@ -423,19 +416,29 @@ class AnnotationSession:
                 self.scene.addItem(self._draw_item)
 
     def _append_mosaic_pen_point(self, pt: QPointF):
-        """马赛克·画笔拖动预览：只把**新点**的马赛克块追加进预览组。
+        """马赛克·画笔拖动预览：只把**新格子**的马赛克块追加进预览组。
 
-        与 mouse_release 的最终图元（_MosaicPenElement）使用同一块尺寸与
-        定位公式，保证预览与落定结果一致；组由本方法按需创建。
+        - 与落定图元（`_MosaicPenElement`）用同一套「吸附到 block 网格」规则，
+          所以预览与落定**逐像素一致**（合并成矩形不会让画面跳变）；
+        - 同一格子内的重复点直接跳过：鼠标 100Hz 采样时相邻点常落在同一格里，
+          原先每个点都建一个 `QGraphicsPixmapItem`，密密麻麻的方格会把场景项数
+          推上去（拖动掉帧，落定后这份开销还留着）。
         """
         if self._draw_item is None:
             self._draw_item = QGraphicsItemGroup()
             self._draw_item.setZValue(6)
             self.scene.addItem(self._draw_item)
+            self._mosaic_cells = set()
         block = float(self._drawing.get("block", self.width) or self.width)
-        r = QRectF(pt.x() - block / 2.0, pt.y() - block / 2.0, block, block)
+        gxy = _mosaic_cell_of(pt.x(), pt.y(), block)
+        if gxy in self._mosaic_cells:
+            return
+        self._mosaic_cells.add(gxy)
+        gx, gy = gxy
+        x, y = gx * block, gy * block
+        r = QRectF(x, y, block, block)
         item = QGraphicsPixmapItem(_make_mosaic_pixmap(self.base, r, block))
-        item.setPos(r.topLeft())
+        item.setPos(x, y)
         self._draw_item.addToGroup(item)
 
     def mouse_release(self, _pt: QPointF):

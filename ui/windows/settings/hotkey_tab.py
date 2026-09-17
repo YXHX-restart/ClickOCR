@@ -7,31 +7,19 @@
 
 from __future__ import annotations
 
-import json
-import time
-from pathlib import Path
 
 from core_engine.logging_setup import get_logger
 
 log = get_logger("settings")
 
-from PySide6.QtCore import Qt, Signal, QSize, QUrl
-from PySide6.QtGui import QKeyEvent, QDesktopServices
-from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QVBoxLayout,
-                               QTabWidget, QWidget, QCheckBox, QComboBox,
-                               QLineEdit, QSpinBox, QLabel, QPushButton,
-                               QApplication, QFileDialog, QScrollArea, QFrame,
-                               QSlider)
+from PySide6.QtWidgets import (QVBoxLayout,
+                               QWidget, QComboBox,
+                               QLabel, QScrollArea, QFrame)
 
-from config import ConfigManager
-from ui.base.card_window import CardWindow
 from ui.base.texts import T
-from ui.base.theme import apply_theme, resolve_theme
-from ui.base.theme_dialog import ThemeDialog
-from ui.base.widgets import (ThemeSpinBox, ColorButton as _ColorButton,
-                             FitComboBox)
+from ui.windows.settings.widgets import Problem   # 问题项消息标记（见 settings_panel._save）
 from ui.base.hotkey_keys import parse_qt_combo
-from ui.windows.settings.widgets import _ModBox, _ShortcutRowEdit, KeyCaptureEdit
+from ui.windows.settings.widgets import _ShortcutRowEdit
 
 
 class HotkeyTabMixin:
@@ -93,13 +81,13 @@ class HotkeyTabMixin:
                     _msgs.append("截图热键：off")
                 elif combo != self._hotkey.active_combo:
                     if self._hotkey.check_conflict(combo):
-                        _msgs.append(f"热键 {combo.upper()} 已被其它程序占用")
+                        _msgs.append(Problem(f"热键 {combo.upper()} 已被其它程序占用"))
                     elif self._hotkey.set_combo(combo):
                         self._cfg.cp.set(
                             "hotkey_global", "screenshot_combo", combo)
                         _msgs.append(f"热键已切换：{combo.upper()}")
                     else:
-                        _msgs.append("热键切换失败（已回滚）")
+                        _msgs.append(Problem("热键切换失败（已回滚）"))
                 else:
                     _msgs.append(f"热键不变：{self._hotkey.active_combo.upper()}")
             elif combo != "off":
@@ -318,7 +306,7 @@ class HotkeyTabMixin:
             else:
                 _m, _v = _parse_global(combo)
                 if _v is None:
-                    msgs.append(f"{label}快捷键格式无效（示例：{hint}）")
+                    msgs.append(Problem(f"{label}快捷键格式无效（示例：{hint}）"))
                 else:
                     # 注册失败（已回滚到旧键）时**不写 config**：否则记录的是
                     # 未生效的新键，重启后再注册再失败 → 热键静默丢失，
@@ -327,7 +315,7 @@ class HotkeyTabMixin:
                     if self._hotkey is not None:
                         if not self._hotkey.set_secondary_combo(hid, combo):
                             ok = False
-                            msgs.append(f"{label}快捷键注册失败（被占用，已回滚）")
+                            msgs.append(Problem(f"{label}快捷键注册失败（被占用，已回滚）"))
                     if ok:
                         self._cfg.cp.set(sec, key, combo)
                         msgs.append(f"{label}快捷键：{combo}")

@@ -230,6 +230,9 @@ def _ensure_nvidia_dlls() -> None:
     _lg.info("nvidia DLL 预加载完成: %d 成功 %d 失败", len(_loaded) - _fail, _fail)
 
 
+_DML_MAX_DEVICES = 8    # 探测的设备索引上限（DXGI 适配器远少于 8，取宽裕值）
+
+
 def probe_cuda_devices(det_path=None) -> list[dict]:
     """探测所有 CUDA 设备（NVIDIA 多卡）的可用性与相对 CPU 推理倍率。
 
@@ -249,7 +252,7 @@ def probe_cuda_devices(det_path=None) -> list[dict]:
     cpu_ms = _probe_infer_ms(det, [("CPUExecutionProvider", {})])
     results = []
     import onnxruntime as ort
-    for dev in range(8):
+    for dev in range(_DML_MAX_DEVICES):
         try:
             sess = ort.InferenceSession(
                 str(det),
@@ -279,12 +282,18 @@ def probe_cuda_devices(det_path=None) -> list[dict]:
     return results
 
 
-def probe_dml_devices(det_path=None) -> list[dict]:
-    """探测所有 D3D12 适配器的 DML 可用性与相对 CPU 推理倍率（不做自动门槛）。
+def probe_dml_devices(det_path=None, first_ok: bool = False) -> list[dict]:
+    """探测 D3D12 适配器的 DML 可用性与相对 CPU 推理倍率（不做自动门槛）。
 
     返回 [{"id": 0, "ok": True, "cpu_ms": .., "dml_ms": .., "speedup": ..}, ...]；
     ok=False 表示该设备不可用（930MX 等建 session 成功但推理失败会被排除）。
     供设置面板「检测」按钮记录并展示；det_path 缺省用 v6-tiny det。
+
+    first_ok=True：**找到第一个可用设备就返回**。设置面板要的是「全部设备的
+    倍率对比」，而 `_detect_dml_device` 只要「第一个可用的」—— 后者原先复用
+    本函数，于是为了拿一个索引，把 8 个设备全建一遍 session 并各跑一次预热
+    计时（CPU 基准 + 每设备数秒），白等好几秒。加这个参数让两个用途各取所需，
+    而不是给调用方留一条「反正结果一样」的假省事路径。
     """
     if not (_NEW and _DIR_V6.exists()):
         return []
@@ -298,7 +307,7 @@ def probe_dml_devices(det_path=None) -> list[dict]:
     cpu_ms = _probe_infer_ms(det, [("CPUExecutionProvider", {})])
     results = []
     import onnxruntime as ort
-    for dev in range(8):
+    for dev in range(_DML_MAX_DEVICES):
         try:
             sess = ort.InferenceSession(
                 str(det),
@@ -324,6 +333,8 @@ def probe_dml_devices(det_path=None) -> list[dict]:
             "dml_ms": round(dml_ms, 1),
             "speedup": round(cpu_ms / dml_ms, 2),
         })
+        if first_ok:
+            return results        # 只问「哪个能用」：后面的设备不必再建 session
     return results
 
 
@@ -346,7 +357,10 @@ def _detect_dml_device(det_path=None) -> int:
             pass
     if _DML_DEVICE_CACHE is None:
         _DML_DEVICE_CACHE = -1
-        for r in probe_dml_devices(det_path):
+        # first_ok=True：本函数只取「第一个可用设备」，不需要全部设备的倍率
+        # （那些是设置面板「检测」按钮的用途）。原先复用全量探测，为了一个
+        # 索引把每个设备都建 session + 预热计时，每次模型重建要多等数秒。
+        for r in probe_dml_devices(det_path, first_ok=True):
             if r.get("ok"):
                 _DML_DEVICE_CACHE = r["id"]
                 break
@@ -476,6 +490,27 @@ def _windows_numa_info():
         return [], []
 
 
+def _dedupe_physical_cores(entries) -> list:
+    """[(cpu_index, core_id, pkg_id)] → 去重后的 cores 列表 [(mask, group, flags)]。
+
+    同一物理核的超线程共享 `(pkg_id, core_id)`，只保留**最小编号**的逻辑 CPU
+    作代表位。**必须带物理包号**：多路（多 socket）机器上不同 socket 的
+    `core_id` 会重复，只按 core_id 去重会把两颗物理核并成一颗。
+
+    抽成纯函数是为了可测：sysfs 读取部分无法在 Windows 上验证，但「去重规则」
+    本身可以。
+    """
+    seen = set()
+    out = []
+    for c, core_id, pkg_id in entries:
+        key = (pkg_id, core_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(((1 << c) if c < 64 else 0, 0, 1))   # flags=1 标记物理核
+    return out
+
+
 def _linux_numa_info():
     """返回 (nodes, cores)，结构与 _windows_numa_info 对齐。
     注意：亲和性位图按 64 位掩码表示（Single NUMA 节点内 CPU 数通常 < 64，
@@ -500,20 +535,24 @@ def _linux_numa_info():
                 if c < 64:
                     mask |= (1 << c)
             nodes.append((nid, mask, 0))  # Linux 单节点无 processor group 概念
-        # 物理核：按 core_id 去重（同 core_id 的多线程属同一物理核）
-        cores = []
+        # 物理核：按 (物理包号, core_id) 去重。
+        # 原先 `core_id` 读出来就丢掉了 —— 每个逻辑 CPU 都算一颗「物理核」，
+        # 而下面 _single_numa_physical_cores 拿它当 onnxruntime 的线程数，
+        # 于是多路 Linux 上线程数被算成**逻辑**核数，正好是上面注释里说要避免的
+        # 超订（SMT 兄弟线程各占一个「核」）。
+        entries = []
         cpu_topo = "/sys/devices/system/cpu"
         for c in range(256):
-            core_path = os.path.join(
-                cpu_topo, "cpu%d" % c, "topology", "core_id")
+            cdir = os.path.join(cpu_topo, "cpu%d" % c, "topology")
             try:
-                with open(core_path) as f:
+                with open(os.path.join(cdir, "core_id")) as f:
                     core_id = int(f.read().strip())
+                with open(os.path.join(cdir, "physical_package_id")) as f:
+                    pkg_id = int(f.read().strip())
             except Exception:
                 continue
-            mask = (1 << c) if c < 64 else 0
-            cores.append((mask, 0, 1))  # flags=1 标记为主线程/物理核
-        return nodes, cores
+            entries.append((c, core_id, pkg_id))
+        return nodes, _dedupe_physical_cores(entries)
     except Exception:
         return [], []
 
@@ -623,6 +662,10 @@ class RapidOcrEngine:
 
     # ---- 构建 ----
     def _build_v6(self):
+        # `_DML_DEVICE` 只服务**构建期**（rapidocr 建 session 时经
+        # _dml_get_ep_list 读它），构建完即在 finally 里恢复原值 —— 见下方说明。
+        # `global` 必须声明在函数内首次使用之前，故提到这里。
+        global _DML_DEVICE
         if _RapidOCR_NEW is None:
             raise RuntimeError("未找到可用 OCR 后端：rapidocr(3.9+) 未安装")
         mtype, det_name, rec_name, dict_name = _V6_MODELS.get(
@@ -647,6 +690,8 @@ class RapidOcrEngine:
         # GPU provider 选择：rapidocr 只认 use_cuda/use_dml flag
         # （直接传 providers 列表会被其 ProviderConfig 忽略，引擎静默跑 CPU）
         # DML 选卡经 _detect_dml_device 探测 + monkeypatch 注入 device_id
+        _dml_dev = -1                    # 本次构建探测到的 DML 适配器（仅本函数内有效）
+        _prev_dml_dev = _DML_DEVICE
         if self._use_cuda:
             _ensure_nvidia_dlls()      # 引擎构建前预加载 cudnn/cublas（开发环境）
             params["EngineConfig.onnxruntime.use_cuda"] = True
@@ -663,26 +708,58 @@ class RapidOcrEngine:
                 "do_copy_in_default_stream": True,
             }
         elif self._use_dml:
-            global _DML_DEVICE
-            _DML_DEVICE = _detect_dml_device(_DIR_V6 / det_name)
-            if _DML_DEVICE >= 0:
+            if not _DML_PATCHED:
+                # 补丁没装上（rapidocr 版本差异）时，下面的 use_dml 会按**默认**
+                # device 0 建 session：老机器上可能直接建不起来或推理失败。
+                # 原先这种情况完全静默（_DML_PATCHED 赋了值却没人读）。
+                get_logger("ocr").warning(
+                    "请求 DirectML 但适配器补丁未安装（rapidocr 版本差异）："
+                    "将按默认适配器构建，可能回退 CPU")
+            _dml_dev = _detect_dml_device(_DIR_V6 / det_name)
+            _DML_DEVICE = _dml_dev
+            if _dml_dev >= 0:
                 params["EngineConfig.onnxruntime.use_dml"] = True
             # else：全部适配器不可用（如 930MX 建 session 成功但推理失败）→
             # 不设 use_dml、按 CPU 构建。原实现此处仍留 use_dml=True，rapidocr
             # 会按默认 DML device 0 建 session，导致每次 recognize 抛异常
             # （OCR 完全不可用）；_gpu_active=False 只是显示层，救不了 provider。
-        engine = _RapidOCR_NEW(params=params)
+        try:
+            engine = _RapidOCR_NEW(params=params)
+        finally:
+            # 构建完立刻恢复 `_DML_DEVICE`：这个模块级变量只服务**构建期**
+            # （rapidocr 建 session 时经 _dml_get_ep_list 读它）。原先它长期驻留，
+            # 第二个引擎实例构建时会覆盖第一个的取值 —— 两个实例互相干扰，且
+            # 从调用方完全看不出来。读取一律用局部 `_dml_dev`，不再依赖全局状态。
+            _DML_DEVICE = _prev_dml_dev
         # DML：gpu_active 由探测判定（探测时已建 session 并跑过推理验证）；
         # 不可再调 _probe_gpu —— onnxruntime-directml 多 DML session 共存会段错误（实测）
         if self._use_dml:
-            self._gpu_active = _DML_DEVICE is not None and _DML_DEVICE >= 0
+            self._gpu_active = _dml_dev >= 0
             if not self._gpu_active:
                 import logging
                 logging.getLogger("clickocr.ocr").warning(
                     "DML 适配器全部不可用，OCR 引擎已回退 CPU")
         else:
             self._gpu_active = self._probe_gpu()
+        self._report_actual_device()
         return engine
+
+    def _report_actual_device(self) -> None:
+        """把**实际落位**回报给 core_engine.ort_runtime（供设置面板显示真状态）。
+
+        设置面板原先只看 `ort.get_available_providers()`——EP 在列表里就显示
+        「已就绪」，而驱动异常/显存不足时 session 其实建不起来或直接回落 CPU，
+        用户选了 GPU 却在跑 CPU 而界面毫无提示。引擎构建是唯一知道真像的地方，
+        故由这里回报；失败只记 debug，绝不影响构建结果。
+        """
+        if not (self._use_cuda or self._use_dml):
+            return
+        dev = "cuda" if self._use_cuda else "dml"
+        try:
+            from core_engine.ort_runtime import record_actual
+            record_actual(dev, bool(self._gpu_active))
+        except Exception as e:           # noqa: BLE001 回报失败不影响引擎
+            get_logger("ocr").debug("回报实际推理设备失败：%s", e)
 
     def _probe_gpu(self) -> bool:
         """用当前档位 v6 det 模型建 session 探测所选 GPU provider 是否真正可用。"""
@@ -704,6 +781,31 @@ class RapidOcrEngine:
             return False
 
     # ---- 档位切换 ----
+    def unload(self) -> None:
+        """丢弃内部引擎（进程退出路径用）：session 析构后显存/竞技场随之归还。
+
+        对外提供公开接口，是为了让退出流程不再直接捅 `eng._engine`（私有属性
+        一旦改名，`_on_quit` 会静默什么都不做，显存直到进程结束才由 OS 回收）。
+        持 `_lock` 与 `_ensure_engine`/`switch_model` 互斥；与推理的互斥由
+        `_infer_lock` 尽力保证（拿不到就跳过等待——退出路径不能卡住，此时
+        进程即将结束，残留一个 session 由 OS 释放）。
+        """
+        got = False
+        try:
+            got = self._infer_lock.acquire(timeout=2.0)
+        except Exception:                # noqa: BLE001 拿不到锁也要继续释放
+            got = False
+        try:
+            with self._lock:
+                self._engine = None
+                self._gpu_active = False
+        finally:
+            if got:
+                try:
+                    self._infer_lock.release()
+                except Exception:        # noqa: BLE001
+                    pass
+
     def switch_model(self, model_set: str) -> None:
         """M2 — 运行期切换模型档位（v6-tiny / v6-small / v6-medium）。
 
@@ -746,13 +848,18 @@ class RapidOcrEngine:
         boxes = getattr(result, "boxes", None)
         if boxes is None:
             return []          # 无识别结果（空图/纯色图）
+        # strict=False 是**有意**的（不是漏写）：三份数据来自同一次推理，正常
+        # 等长；但这里在识别热路径上，rapidocr 若因版本差异多给/少给一项，
+        # strict=True 会让**整张图的识别直接失败**（用户看到「识别失败」而不是
+        # 少一行字）。保持既有的「截断尾部」行为，代价是可接受的。
         return [
             OcrBox(
                 text=str(t),
                 polygon=np.asarray(pts, dtype=int).tolist(),
                 score=float(s),
             )
-            for pts, t, s in zip(boxes, result.txts or [], result.scores or [])
+            for pts, t, s in zip(boxes, result.txts or [], result.scores or [],
+                                 strict=False)
         ]
 
     def get_info(self) -> dict:

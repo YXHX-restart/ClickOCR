@@ -32,8 +32,14 @@ _DEFAULTS = {
     "software": {
         "history_max_count": "50",        # 历史保留条数（默认 50，不设上限）
         "screenshots_dir": "",            # 历史图片目录（空 = 默认 screenshots/）
-        "max_history_windows": "1",       # 截图贴图最大数量
-        "max_hist_windows": "3",          # 历史贴图最大数量
+        # 两类贴图窗口配额，**互不相干**，勿混：
+        #   max_shot_windows    = 「截图贴图」：截图完成后自动贴出的窗口（默认 1）
+        #   max_restore_windows = 「历史贴图」：从历史记录恢复打开的窗口（默认 3）
+        # 旧名 max_history_windows / max_hist_windows 仅差 3 个字符、语义又都带
+        # "history"，历次审查都把它们误判成「改名遗留的重复键」——故显式改成
+        # 现在这两名字（shot / restore），旧名由 _LEGACY_MAP 自动迁移。
+        "max_shot_windows": "1",          # 截图贴图最大数量
+        "max_restore_windows": "3",       # 历史贴图最大数量
         "max_pin_windows": "3",           # 钉图最大数量（上限 20）
         "enable_qr": "false",             # 二维码识别默认开关
         "selection_mode": "auto_commit",  # 复制模式：auto_commit | manual_copy
@@ -66,7 +72,9 @@ _DEFAULTS = {
         "image_border_color": "100,190,255",    # 结果图边框色
         "image_border_width": "1",              # 结果图边框线宽（0=不显示）
         "qr_border_color": "156,39,176",        # 二维码框色（紫）
+        "qr_border_width": "1",                 # 二维码框线宽（1~10，同截图边框）
         "table_border_color": "90,220,120",     # 表格网格框色（绿）
+        "table_border_width": "1",              # 表格网格线宽（1~10，同截图边框）
         "show_text_boxes": "true",              # 识别文字框默认显示
         "anno_toolbar_default": "false",        # 截图后标注栏默认开启
         "toolbar_enabled": "true",              # 统一工具栏全局开关
@@ -173,8 +181,12 @@ _LEGACY_MAP = {
     # 设置窗口「软件设置」页
     ("db", "screenshot_max_count"): ("software", "history_max_count"),
     ("paths", "screenshots_dir"): ("software", "screenshots_dir"),
-    ("ui", "max_history_windows"): ("software", "max_history_windows"),
-    ("ui", "max_hist_windows"): ("software", "max_hist_windows"),
+    ("ui", "max_history_windows"): ("software", "max_shot_windows"),
+    ("ui", "max_hist_windows"): ("software", "max_restore_windows"),
+    # 2026-09-18 键名消歧：旧名只差 3 个字符且都含 "history"，被历次审查误判为
+    # 「重复键」。同 section 改名，靠 _LEGACY_MAP 把用户现有取值搬过去（不重置）。
+    ("software", "max_history_windows"): ("software", "max_shot_windows"),
+    ("software", "max_hist_windows"): ("software", "max_restore_windows"),
     ("ui", "max_pin_windows"): ("software", "max_pin_windows"),
     ("ui", "enable_qr"): ("software", "enable_qr"),
     ("screenshot", "selection_mode"): ("software", "selection_mode"),
@@ -295,13 +307,17 @@ class ConfigManager:
             for _k, _v in self.cp.items(_sec):
                 if "%%" in _v:
                     self.cp.set(_sec, _k, _v.replace("%%", "%"))
-        # 旧结构（v0.13 及以前）→ 新结构迁移：搬值后清空旧 section
+        # 旧结构（v0.13 及以前）→ 新结构迁移，或同 section 改名：搬值后删旧键
         removed = set()
         for (old_sec, old_key), (new_sec, new_key) in _LEGACY_MAP.items():
             if self.cp.has_option(old_sec, old_key):
-                if not self.cp.has_section(new_sec):
-                    self.cp.add_section(new_sec)
-                self.cp.set(new_sec, new_key, self.cp.get(old_sec, old_key))
+                # 目标键已存在 = 已迁移过（或被新版/用户显式写过）：**以目标键为准**，
+                # 只把旧键清掉。否则「旧值覆盖新值」会让改过的设置被历史值回退
+                # （改名类迁移尤其明显：旧键若被手工补回，新值就被顶掉）。
+                if not self.cp.has_option(new_sec, new_key):
+                    if not self.cp.has_section(new_sec):
+                        self.cp.add_section(new_sec)
+                    self.cp.set(new_sec, new_key, self.cp.get(old_sec, old_key))
                 self.cp.remove_option(old_sec, old_key)
                 removed.add(old_sec)
         for sec in removed:
@@ -320,7 +336,14 @@ class ConfigManager:
         return self.cp.get(section, key, fallback=default)
 
     def getbool(self, section: str, key: str, default=False) -> bool:
-        return self.cp.getboolean(section, key, fallback=default)
+        # fallback 只在「节/键不存在」时生效；键存在但值不是布尔词法
+        # （用户手改 config.ini 写成 yes-no 之外的东西，如 "1 "、"true."）
+        # 时 configparser 仍抛 ValueError —— 与 getint 对齐，回退默认值，
+        # 不让一处手改把整个调用点崩掉。
+        try:
+            return self.cp.getboolean(section, key, fallback=default)
+        except ValueError:
+            return default
 
     def getint(self, section: str, key: str, default: int = 0) -> int:
         try:

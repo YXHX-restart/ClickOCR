@@ -15,25 +15,28 @@ from core_engine.logging_setup import get_logger
 
 log = get_logger("settings")
 
-from PySide6.QtCore import Qt, Signal, QSize, QUrl
-from PySide6.QtGui import QKeyEvent, QDesktopServices
-from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QVBoxLayout,
-                               QTabWidget, QWidget, QCheckBox, QComboBox,
-                               QLineEdit, QSpinBox, QLabel, QPushButton,
-                               QApplication, QFileDialog, QScrollArea, QFrame,
-                               QSlider)
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import (QHBoxLayout, QWidget, QCheckBox, QLineEdit, QLabel, QPushButton,
+                               QFileDialog, QSlider)
 
-from config import ConfigManager
-from ui.base.card_window import CardWindow
 from ui.base.texts import T
-from ui.base.theme import apply_theme, resolve_theme
 from ui.base.theme_dialog import ThemeDialog
-from ui.base.widgets import (ThemeSpinBox, ColorButton as _ColorButton,
-                             FitComboBox)
-from ui.windows.settings.widgets import _ModBox, _ShortcutRowEdit, KeyCaptureEdit
+from ui.base.widgets import (ThemeSpinBox, FitComboBox)
 
 
 class SoftwareTabMixin:
+    # GPU 检测结果的保质期（天）。倍率随驱动版本、系统负载、显存占用变化，
+    # 旧结果只代表「当时」——而 `cuda_probe` / `dml_probe` 里的 `time` 字段
+    # 原先只写不读，于是几个月前的检测结果会一直被当成「最近一次」，
+    # 把 ≈N× 拼进下拉框，用户会以为这就是当前性能。
+    # 过期只影响**展示**：用哪个 EP 由用户选择 + 运行时自动回退决定，
+    # 倍率从不参与功能决策。
+    _PROBE_TTL_DAYS = 30
+    # 在途的一次性后台线程（类属性作默认值：本 mixin 没有 __init__，
+    # 首次赋值即成为实例属性，未赋值时读到 None 也不会 AttributeError）
+    _probe_worker = None      # GPU 探测（1~4s）
+    _clear_worker = None      # 清空历史（删库 + 逐个删文件）
     # ---- Tab 1：软件设置 ----
     def _build_software_tab(self) -> QWidget:
         page, scroll, inner = self._scroll_page()
@@ -66,12 +69,12 @@ class SoftwareTabMixin:
 
         # 截图贴图最大数量（默认 1，打开下一个销毁最旧）
         self.spin_max_shot = ThemeSpinBox(
-            1, 10, self._cfg.getint("software", "max_history_windows", 1), width=56)
+            1, 10, self._cfg.getint("software", "max_shot_windows", 1), width=56)
         form.addRow(T("history.shot_count", "截图贴图"), self.spin_max_shot)
 
         # 历史贴图最大数量（从历史记录恢复的图片窗口，默认 3）
         self.spin_max_hist = ThemeSpinBox(
-            1, 10, self._cfg.getint("software", "max_hist_windows", 3), width=56)
+            1, 10, self._cfg.getint("software", "max_restore_windows", 3), width=56)
         form.addRow(T("history.hist_count", "历史贴图"), self.spin_max_hist)
         self._attach_hint(
             form, self.spin_max_hist,
@@ -325,13 +328,41 @@ class SoftwareTabMixin:
         dev = self.combo_accel.currentData()
         self.lbl_accel_status.setText(runtime_status(dev))
 
+    @staticmethod
+    def _probe_age_days(data: dict) -> float | None:
+        """检测结果距今天数；时间戳缺失/无法解析返回 None（调用方按过期处理）。"""
+        raw = str(data.get("time", "") or "").strip()
+        if not raw:
+            return None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                t = time.strptime(raw, fmt)
+                break
+            except ValueError:
+                continue
+        else:
+            return None
+        return (time.time() - time.mktime(t)) / 86400.0
+
     def _cfg_get_probe(self, ep: str = "dml") -> dict:
-        """读配置里最近一次 GPU 检测结果（JSON）；缺失/损坏返回空 dict。"""
+        """读配置里最近一次 GPU 检测结果（JSON）。
+
+        缺失 / 损坏 / **已过期**一律返回空 dict（调用方据此不显示倍率）。
+        """
         key = "cuda_probe" if ep == "cuda" else "dml_probe"
         try:
             raw = self._cfg.get("software", key, "")
             data = json.loads(raw) if raw else {}
-            return data if isinstance(data, dict) else {}
+            if not isinstance(data, dict):
+                return {}
+            age = self._probe_age_days(data)
+            if age is None or age > self._PROBE_TTL_DAYS:
+                # 只告警不抛：这是展示信息，不能因为一条过期记录把设置页带崩
+                log.warning("GPU 检测结果已失效（%s，time=%r），本次不显示倍率",
+                            "时间戳缺失" if age is None else f"{age:.0f} 天前",
+                            data.get("time"))
+                return {}
+            return data
         except Exception:  # noqa: BLE001
             return {}
 
@@ -339,24 +370,40 @@ class SoftwareTabMixin:
         """检测按钮：探测所选 EP（DirectML / CUDA）各设备实际推理倍率，
         记录到配置（[software] dml_probe / cuda_probe）并刷新显示。
 
-        用当前模型档位的 det 模型计时（640x640）；探测约 1~4 秒同步执行。
+        **探测整体在后台线程跑**（建 CPU 基准 session + 逐设备建 session 预热
+        计时，实测 1~4 秒）。原先同步执行再靠 `QApplication.processEvents()`
+        假装不卡 —— 那只是把卡顿摊成一串重入点，期间按钮仍可再点、窗口仍可关，
+        而重入路径没有任何保护。这里只做「导入 + 解析模型路径」两步轻活。
         """
+        w = self._probe_worker
+        if w is not None and w.isRunning():
+            return                    # 已在探测（按钮同时是禁用的，双保险）
         dev = self.combo_accel.currentData()
         if dev == "cpu":
             ThemeDialog.info(None, T("gpu.accel", "GPU 加速"),
                              T("ui.probe_cpu", "CPU 模式无需 GPU 检测。"))
             self._refresh_accel_status()
             return
-        if dev == "dml":
-            from ocr.rapid_engine import probe_dml_devices, _DIR_V6
-            probe_fn = probe_dml_devices
-        elif dev == "cuda":
-            from ocr.rapid_engine import probe_cuda_devices, _DIR_V6
-            probe_fn = probe_cuda_devices
-        else:
-            ThemeDialog.info(None, T("gpu.accel", "GPU 加速"),
-                             T("ui.probe_unsupported",
-                               "{} 暂不支持性能检测。").format(dev))
+        # 导入放在 try 内：`ocr.rapid_engine` 在**导入期**就会 monkeypatch
+        # onnxruntime 的 provider 配置并探测 GPU（文件顶部满是这类副作用），
+        # 依赖缺失/驱动异常都可能在这里抛 —— 先前这行裸露在按钮回调里，
+        # 异常会直接冒到 Qt 事件循环（未捕获），只留一句 "Slot 异常"。
+        try:
+            if dev == "dml":
+                from ocr.rapid_engine import probe_dml_devices as probe_fn
+                from ocr.rapid_engine import _DIR_V6
+            elif dev == "cuda":
+                from ocr.rapid_engine import probe_cuda_devices as probe_fn
+                from ocr.rapid_engine import _DIR_V6
+            else:
+                ThemeDialog.info(None, T("gpu.accel", "GPU 加速"),
+                                 T("ui.probe_unsupported",
+                                   "{} 暂不支持性能检测。").format(dev))
+                return
+        except Exception as e:            # noqa: BLE001 依赖/导入期异常
+            log.exception("GPU 检测模块导入失败")
+            self.lbl_accel_status.setText(
+                T("ui.probe_import_fail", "检测不可用：{}").format(e))
             return
         det_path = None
         try:
@@ -371,17 +418,27 @@ class SoftwareTabMixin:
         self.btn_accel_install.setEnabled(False)
         self.btn_accel_install.setText(T("btn.detect_running", "检测中…"))
         self.lbl_accel_status.setText(T("ui.probe_running", "正在探测设备…"))
-        QApplication.processEvents()
-        try:
-            devices = probe_fn(det_path)
-        except Exception as e:  # noqa: BLE001
-            log.exception("GPU 检测失败")
-            devices = []
-            self.lbl_accel_status.setText(
-                T("ui.probe_fail", "检测失败：{}").format(e))
-        finally:
-            self.btn_accel_install.setEnabled(True)
-            self.btn_accel_install.setText(T("btn.detect", "检测"))
+        # 局部导入：本文件是纯 UI 模块，不在 import 期把 appmod.workers（会拉起
+        # ocr → onnxruntime 整条重链路）拖进来
+        from appmod.workers import GpuProbeWorker
+        w = GpuProbeWorker(probe_fn, det_path, parent=self)
+        w.done.connect(lambda devices, _d=dev: self._on_gpu_probe_done(_d, devices))
+        w.failed.connect(lambda msg, _d=dev: self._on_gpu_probe_failed(_d, msg))
+        w.finished.connect(self._on_gpu_probe_finished)
+        self._probe_worker = w
+        w.start()
+
+    def _on_gpu_probe_finished(self):
+        """探测线程收尾（无论成功/失败都要走）：恢复按钮可用。"""
+        self.btn_accel_install.setEnabled(True)
+        self.btn_accel_install.setText(T("btn.detect", "检测"))
+
+    def _on_gpu_probe_failed(self, dev: str, msg: str):
+        self.lbl_accel_status.setText(
+            T("ui.probe_fail", "检测失败：{}").format(msg))
+
+    def _on_gpu_probe_done(self, dev: str, devices: list):
+        """探测完成（主线程）：记录到配置 + 刷新下拉框与状态文本。"""
         if not devices:
             self.lbl_accel_status.setText(T(
                 "ui.probe_no_dev", "未检测到可用的 {} 设备（当前环境无支持）。"
@@ -444,28 +501,79 @@ class SoftwareTabMixin:
 
     def _clear_all_history(self):
         """清空全部历史（原历史面板按钮移入）：确认后只清非收藏，收藏保留；
-        完成后经 App 回调刷新已打开的历史面板。"""
+        完成后经 App 回调刷新已打开的历史面板。
+
+        **清空在后台线程跑**：条数上限默认 50、实测可达数千，「删 N 条记录 +
+        逐个删磁盘文件」同步在 UI 线程会让设置页整个冻住（用户以为程序死了）。
+        """
         if self._history is None:
             self._notify(T("ui.msg_history_none", "历史记录不可用"))
             return
+        w = self._clear_worker
+        if w is not None and w.isRunning():
+            return                    # 已在清空（按钮同时是禁用的，双保险）
         if not ThemeDialog.question(
                 None,
                 T("settings.title", "ClickOCR 设置"),
                 T("settings.clear_all_hist_confirm",
                   "确定清空历史记录？\n（收藏的图片会保留，此操作不可恢复）")):
             return
-        try:
-            self._history.clear(keep_favorites=True)
-        except Exception as e:      # noqa: BLE001
-            log.exception("清空历史失败: %s", e)
-            self._notify(T("ui.msg_clear_fail", "清空失败：{}").format(e))
-            return
+        from appmod.workers import HistoryClearWorker
+        self.btn_clear_history.setEnabled(False)
+        w = HistoryClearWorker(self._history, keep_favorites=True, parent=self)
+        w.done.connect(self._on_clear_history_done)
+        w.failed.connect(self._on_clear_history_failed)
+        self._clear_worker = w
+        w.start()
+
+    def _on_clear_history_done(self, n: int):
+        """清空完成（主线程）：恢复按钮 → 刷新已打开的历史面板 → 提示。"""
+        self.btn_clear_history.setEnabled(True)
         if self._on_clear_history is not None:
             try:
                 self._on_clear_history()
             except Exception:       # noqa: BLE001
                 log.exception("清空后刷新历史面板失败")
         self._notify(T("ui.msg_cleared", "已清空历史（收藏保留）"))
+
+    def _on_clear_history_failed(self, msg: str):
+        self.btn_clear_history.setEnabled(True)
+        self._notify(T("ui.msg_clear_fail", "清空失败：{}").format(msg))
+
+    def stop_workers(self, timeout_ms: int = 8000):
+        """等待在途的一次性后台线程结束（退出流程调用）。
+
+        不 wait 就在销毁面板对象时触发 "QThread: Destroyed while thread is
+        still running"（可能直接 abort）。两者都是秒级到数秒级的任务。
+        """
+        for attr in ("_probe_worker", "_clear_worker"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                try:
+                    if w.isRunning():
+                        w.wait(timeout_ms)
+                except Exception:      # noqa: BLE001
+                    log.exception("等待设置页后台线程失败：%s", attr)
+            setattr(self, attr, None)
+
+    def sync_drop_ocr_checkbox(self):
+        """按配置刷新「拖入图片后自动 OCR」勾选框（**屏蔽信号**，不回写配置）。
+
+        与 `HistoryPanel.sync_drop_ocr_button` 成对：任一入口改动后由 App 回调
+        （见 App._sync_drop_ocr_ui）把另一处刷成一致。屏蔽信号是必须的 ——
+        否则 `setChecked` 会触发 `changed` → 又被当成用户操作写回配置。
+        """
+        chk = getattr(self, "chk_drop_ocr", None)
+        if chk is None or self._cfg is None:
+            return
+        on = self._cfg.getbool("software", "drop_ocr_auto", True)
+        if chk.isChecked() == on:
+            return
+        chk.blockSignals(True)
+        try:
+            chk.setChecked(on)
+        finally:
+            chk.blockSignals(False)
 
     def _on_save_fmt_changed(self):
         """质量滑块仅对有损格式（JPG/WebP/HEIC/AVIF）生效。"""

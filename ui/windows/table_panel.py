@@ -16,7 +16,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QApplication,
+    QTableWidget, QTableWidgetItem, QWidget,
 )
 
 from core_engine.ai_pipeline import TableCell, TableResult

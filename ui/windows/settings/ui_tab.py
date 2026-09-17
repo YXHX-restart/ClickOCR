@@ -7,31 +7,17 @@
 
 from __future__ import annotations
 
-import json
-import time
-from pathlib import Path
 
 from core_engine.logging_setup import get_logger
 
 log = get_logger("settings")
 
-from PySide6.QtCore import Qt, Signal, QSize, QUrl
-from PySide6.QtGui import QKeyEvent, QDesktopServices
-from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QVBoxLayout,
-                               QTabWidget, QWidget, QCheckBox, QComboBox,
-                               QLineEdit, QSpinBox, QLabel, QPushButton,
-                               QApplication, QFileDialog, QScrollArea, QFrame,
-                               QSlider)
+from PySide6.QtWidgets import (QHBoxLayout, QWidget, QCheckBox, QComboBox,
+                               QLabel)
 
-from config import ConfigManager
-from ui.base.card_window import CardWindow
 from ui.base.texts import T
-from ui.base.theme import (apply_theme, resolve_theme,
-                           theme_names, theme_label, system_label)
-from ui.base.theme_dialog import ThemeDialog
-from ui.base.widgets import (ThemeSpinBox, ColorButton as _ColorButton,
-                             FitComboBox)
-from ui.windows.settings.widgets import _ModBox, _ShortcutRowEdit, KeyCaptureEdit
+from ui.base.theme import (theme_names, theme_label, system_label)
+from ui.base.widgets import (ThemeSpinBox, ColorButton as _ColorButton)
 
 
 class UiTabMixin:
@@ -83,20 +69,8 @@ class UiTabMixin:
               "历史记录窗口宽度（400~1600）与显示卡片数（决定面板高度，"
               "每张卡片约 84px）；保存后下次打开生效。"))
 
-        # 截图框选边框
-        self.btn_sel_color = _ColorButton(
-            self._cfg.getcolor("ui", "border_color", (100, 190, 255)))
-        self.spin_sel_width = ThemeSpinBox(
-            1, 10, self._cfg.getint("ui", "border_width", 2),
-            width=_W5)
-        border_row = QHBoxLayout()
-        border_row.setSpacing(4)
-        border_row.addWidget(self.btn_sel_color)
-        border_row.addWidget(self.spin_sel_width)
-        border_row.addStretch(1)
-        form.addRow(T("ui.sel_border", "截图边框"), border_row)
-
         # 截图取色器：放大镜像素框大小 / 放大倍率（最大 15×15）
+        # 位置紧跟「历史面板」之下（按使用频次排列：面板尺寸 → 取色器 → 各边框）
         self.spin_picker_size = ThemeSpinBox(
             3, 15, self._cfg.getint("ui", "picker_size", 7),
             width=_W5)
@@ -117,6 +91,19 @@ class UiTabMixin:
             form, picker_row,
             T("ui.picker_hint", "像素框 = 放大镜采样的像素边长（3~15，最大 15×15）；放大倍率 = 每像素放大倍数。"))
 
+        # 截图框选边框
+        self.btn_sel_color = _ColorButton(
+            self._cfg.getcolor("ui", "border_color", (100, 190, 255)))
+        self.spin_sel_width = ThemeSpinBox(
+            1, 10, self._cfg.getint("ui", "border_width", 2),
+            width=_W5)
+        border_row = QHBoxLayout()
+        border_row.setSpacing(4)
+        border_row.addWidget(self.btn_sel_color)
+        border_row.addWidget(self.spin_sel_width)
+        border_row.addStretch(1)
+        form.addRow(T("ui.sel_border", "截图边框"), border_row)
+
         # 贴图窗口边框（overlay）
         self.btn_overlay_color = _ColorButton(
             self._cfg.getcolor("ui", "overlay_border_color", (100, 190, 255)))
@@ -133,19 +120,29 @@ class UiTabMixin:
             form, overlay_row,
             T("ui.overlay_border_hint", "宽度 0 = 不显示边框（[selection]/[result] 配置段）。"))
 
-        # 二维码识别边框（[ui] qr_border_color，默认紫）
+        # 二维码识别边框（[ui] qr_border_color，默认紫）+ 线宽（同截图边框的做法）
         self.btn_qr_color = _ColorButton(
             self._cfg.getcolor("ui", "qr_border_color", (156, 39, 176)))
+        self.spin_qr_width = ThemeSpinBox(
+            1, 10, self._cfg.getint("ui", "qr_border_width", 1),
+            width=_W5)
         qr_row = QHBoxLayout()
+        qr_row.setSpacing(4)
         qr_row.addWidget(self.btn_qr_color)
+        qr_row.addWidget(self.spin_qr_width)
         qr_row.addStretch(1)
         form.addRow(T("ui.qr_border", "二维码边框"), qr_row)
 
-        # 表格模式网格边框（[ui] table_border_color，默认绿）
+        # 表格模式网格边框（[ui] table_border_color，默认绿）+ 线宽（同截图边框）
         self.btn_table_color = _ColorButton(
             self._cfg.getcolor("ui", "table_border_color", (90, 220, 120)))
+        self.spin_table_width = ThemeSpinBox(
+            1, 10, self._cfg.getint("ui", "table_border_width", 1),
+            width=_W5)
         table_row = QHBoxLayout()
+        table_row.setSpacing(4)
         table_row.addWidget(self.btn_table_color)
+        table_row.addWidget(self.spin_table_width)
         table_row.addStretch(1)
         form.addRow(T("ui.table_border", "表格边框"), table_row)
 
@@ -172,7 +169,8 @@ class UiTabMixin:
         form.addRow("", self.chk_text_boxes)
 
         # 标注栏默认开启
-        self.chk_anno_default = QCheckBox(T("ui.anno_bar", "标注栏"))
+        # 默认文案与 resources/ui_text.json 保持一致（i18n 守卫会比对二者）
+        self.chk_anno_default = QCheckBox(T("ui.anno_bar", "标注工具栏"))
         self.chk_anno_default.setChecked(
             self._cfg.getbool("ui", "anno_toolbar_default", False))
         form.addRow("", self.chk_anno_default)

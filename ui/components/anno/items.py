@@ -6,16 +6,12 @@
 
 from __future__ import annotations
 
-import copy
 import math
 
-from PySide6.QtCore import Qt, QPointF, QRectF, Signal
+from PySide6.QtCore import Qt, QPointF, QRectF
 from PySide6.QtGui import (QColor, QPen, QBrush, QFont, QPainterPath,
                            QPolygonF, QPixmap, QImage, QPainter)
-from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QPushButton,
-                               QLabel, QFrame, QSlider, QSpinBox,
-                               QButtonGroup, QFontComboBox, QComboBox,
-                               QGraphicsRectItem, QGraphicsLineItem,
+from PySide6.QtWidgets import (QGraphicsRectItem, QGraphicsLineItem,
                                QGraphicsPathItem, QGraphicsPolygonItem,
                                QGraphicsPixmapItem, QGraphicsEllipseItem,
                                QGraphicsTextItem, QGraphicsItemGroup,
@@ -24,10 +20,7 @@ from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QPushButton,
 from platform_compat.fonts import ui_font_family
 
 # 标注核心纯逻辑（命令撤销体系 + 序列化，无 Qt 依赖，见 ui/anno_core.py）
-from ui.core.anno_core import (ANNO_VERSION, UNDO_LIMIT, SERIALIZABLE_TYPES,
-                          _Cmd, _AddCmd, _DeleteCmd, _MoveCmd, _EditCmd,
-                          _ClearCmd, _RenumberCmd,
-                          anno_to_json, anno_from_json)
+from ui.core.anno_core import (anno_from_json)
 
 
 # ---- 命令模式撤销/重做（Command 栈）：命令类见 ui/anno_core.py ----
@@ -511,7 +504,7 @@ class _PenElement(_BaseElement):
             out_pts = [(px + nx * amp * math.sin(math.tau * i / n * waves),
                         py + ny * amp * math.sin(math.tau * i / n * waves))
                        for i, ((px, py), (nx, ny))
-                       in enumerate(zip(rs, norms))]
+                       in enumerate(zip(rs, norms, strict=True))]
             return _polyline_item(out_pts, pen)
         if style == "dash":
             pen.setStyle(Qt.DashLine)
@@ -575,17 +568,25 @@ class _MosaicElement(_BaseElement):
 
 
 class _MosaicPenElement(_BaseElement):
-    """马赛克·画笔图元：路径上每个点一个 block 大小的马赛克块（group）。"""
+    """马赛克·画笔图元：轨迹 → 合并后的少量矩形马赛克块（group）。
+
+    原先「每个轨迹点一个 block 大小的 QGraphicsPixmapItem」：图元数随鼠标采样点
+    线性增长，密集涂抹时场景索引/包围盒/重绘全部跟着膨胀，落定后这份开销一直留着。
+    现在先网格化再合并（见 `_mosaic_pen_rects`），图元数降到「行数」量级 ——
+    横向涂抹通常只剩 1 个图元。
+    """
 
     @staticmethod
     def create(d, base):
         block = d.get("block", 8)
+        rects = _mosaic_pen_rects(d.get("points", []), block)
+        # 注意：无点/脏数据时返回**空 group** 而不是 None —— 旧实现无论有无点
+        # 都返回 group，改契约会影响所有「拿到 item 就用」的调用方
         group = QGraphicsItemGroup()
-        for px, py in d.get("points", []):
-            r = QRectF(px - block / 2.0, py - block / 2.0, block, block)
-            pm = _make_mosaic_pixmap(base, r, block)
+        for x, y, w, h in rects:
+            pm = _make_mosaic_pixmap(base, QRectF(x, y, w, h), block)
             item = QGraphicsPixmapItem(pm)
-            item.setPos(r.topLeft())
+            item.setPos(x, y)
             group.addToGroup(item)
         return group
 
@@ -806,6 +807,80 @@ def _hex(qc: QColor) -> str:
 
 
 # ---- 马赛克纹理 ----
+def _mosaic_cell_of(px, py, block: int) -> tuple[int, int]:
+    """把轨迹点**吸附**到 block 网格，返回格子坐标 (gx, gy)。
+
+    吸附是「把逐点图元合并成少量矩形」的前提，也是合并后仍能**逐像素等价**的原因：
+    把一整条 run 缩放到 1 像素高再放大回来时，每格得到的正是该格自身的均值色 ——
+    与逐格单独画（block×block 缩到 1×1 再放大）结果相同。
+    马赛克本来就是粗块，吸附带来的位移不超过半个 block，观感上只是块与块对齐了。
+    """
+    b = max(1, int(block))
+    return (int(math.floor((float(px) - b / 2.0) / b)),
+            int(math.floor((float(py) - b / 2.0) / b)))
+
+
+def _mosaic_cells(points, block: int) -> set:
+    """轨迹点列表 → 占用的马赛克格子集合 {(gx, gy)}（重复点自动去重）。"""
+    cells = set()
+    for p in points or []:
+        try:
+            cells.add(_mosaic_cell_of(p[0], p[1], block))
+        except (TypeError, ValueError, IndexError):
+            continue          # 脏数据（点缺失/非数值）跳过，不拖垮整条标注
+    return cells
+
+
+def _mosaic_pen_rects(points, block: int) -> list:
+    """轨迹点 → 合并后的矩形列表 [(x, y, w, h), ...]（单位=像素）。
+
+    两级合并：行内连续格子并成横条 → 相邻行里「起止列完全相同」的横条再并成矩形。
+
+    为什么不是「一个包住整条笔画的图元」：那样会把大片空白一起纳入图元的渲染区域，
+    斜向涂抹时反而更慢（要逐像素混合那些透明空白）。这里保证
+    **图元数 ≈ 行数**、**覆盖面积 = 实际涂抹的格子**，两个开销同时降下来：
+    横向涂抹 1 个图元、纵向 1 个、斜向每行 1 个（原先 = 鼠标采样点数）。
+    """
+    cells = _mosaic_cells(points, block)
+    if not cells:
+        return []
+    b = max(1, int(block))
+    by_row: dict = {}
+    for gx, gy in cells:
+        by_row.setdefault(gy, []).append(gx)
+    # 1) 行内连续格子 → 横条 {(gy): [(gx0, gxn), ...]}
+    spans: dict = {}
+    for gy, xs in by_row.items():
+        xs.sort()
+        runs = []
+        start = prev = xs[0]
+        for x in xs[1:]:
+            if x == prev + 1:
+                prev = x
+                continue
+            runs.append((start, prev))
+            start = prev = x
+        runs.append((start, prev))
+        spans[gy] = runs
+    # 2) 纵向合并：起止列相同的横条，跨相邻行并成一个矩形
+    rects = []
+    active: dict = {}          # (gx0, gxn) -> 起始 gy
+    for gy in sorted(spans):
+        cur = set(spans[gy])
+        for key in [k for k in active if k not in cur]:
+            gx0, gxn = key
+            gy0 = active.pop(key)
+            rects.append((gx0 * b, gy0 * b, (gxn - gx0 + 1) * b, (gy - gy0) * b))
+        for key in cur:
+            active.setdefault(key, gy)
+    last = max(spans)
+    for (gx0, gxn), gy0 in active.items():
+        rects.append((gx0 * b, gy0 * b, (gxn - gx0 + 1) * b,
+                      (last - gy0 + 1) * b))
+    rects.sort(key=lambda r: (r[1], r[0]))
+    return rects
+
+
 def _make_mosaic_pixmap(base: QPixmap, rect: QRectF, block: int = 8) -> QPixmap:
     """把 base 中 rect 区域块状化（缩小再放大），返回同尺寸马赛克图。"""
     r = rect.toAlignedRect() & base.rect()

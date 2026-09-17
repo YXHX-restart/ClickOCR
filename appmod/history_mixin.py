@@ -6,34 +6,19 @@
 """
 from __future__ import annotations
 
-import json
-import sys
-import threading
 from functools import partial
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QRect, QPoint, QThread, Signal, QTimer
-from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
-from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QSystemTrayIcon
 
-from core_engine.ai_pipeline import MODEL_SET_TO_TIER, OcrBox
-from core_engine.db_manager import DBManager, HistoryStorage
-from core_engine.logging_setup import setup_logging, get_logger
+from core_engine.ai_pipeline import OcrBox
+from core_engine.logging_setup import get_logger
 from core_engine.image_decode import decode_image_bytes as _decode_image_bytes
 
-from ocr import RapidOcrEngine
-from screenshot import ScreenshotService
-from config import ConfigManager
-from hotkey import HotkeyHost
-from platform_compat import capabilities, scroll_capture_supported
-from platform_compat.fonts import ui_font_family
-from ui.base.theme import apply_theme, resolve_theme, install_system_follow
 from ui.base.texts import T
-from ui.windows.selection import SelectionOverlay
-from ui.windows.result_overlay import ResultOverlay
-from appmod.workers import OcrWorker, TableWorker, EngineLoader
 from appmod.image_encode import PILLOW_FORMATS, pillow_encode
 
 log = get_logger("app")
@@ -41,7 +26,11 @@ log = get_logger("app")
 
 class HistoryMixin:
     def _clear_all_history(self):
-        """清空全部历史后：刷新所有已打开的历史面板（清空动作在设置面板内完成）。"""
+        """清空全部历史后：刷新所有已打开的历史面板（清空动作在设置面板内完成）。
+
+        面板顺带整表作废缩略图缓存 —— 记录都没了，缓存条目（每条一个 QPixmap）
+        留着只占内存，且不会自己失效（受面板的 LRU 上限被动淘汰）。
+        """
         panels = list(self._history_panels)
         if self._history_panel is not None \
                 and self._history_panel not in panels:
@@ -49,6 +38,7 @@ class HistoryMixin:
         for p in panels:
             if self._panel_alive(p):
                 try:
+                    p.drop_thumb_cache()
                     p.reload()
                 except Exception:  # noqa: BLE001
                     log.exception("清空历史后刷新面板失败")
@@ -265,6 +255,26 @@ class HistoryMixin:
         return "", ""
 
 
+    def _reload_history_panel(self):
+        """若历史面板打开则刷新；面板未打开/已销毁时静默跳过。
+
+        收敛点：这段「先验活 → 再 reload → 吞异常」原先在落库完成、标注写回、
+        OCR 结果写回、收藏同步、拖放导入、清空历史六处各写一遍。收敛的另一个
+        理由是**顺序**：落库已下沉后台，刷新的时机必须由调用方显式安排在
+        「保存完成之后」，散在各处的内联写法很容易刷在记录入库之前。
+        """
+        p = self._history_panel
+        if p is None or not self._panel_alive(p):
+            return
+        try:
+            # 走**去抖**刷新（reload_soon）而不是立即 reload：本方法服务于
+            # 「推送」路径（识别完/标注落库/收藏切换/拖放批量结束），批量场景
+            # 一秒能触发几十次，每次都全量重建 6 个列表。显式用户动作
+            # （删除/清空/首次打开）在面板内部直接调 reload()，仍是立即的。
+            p.reload_soon()
+        except Exception:      # noqa: BLE001 刷新失败不应影响主流程
+            log.exception("刷新历史面板失败")
+
     def _update_history_ocr(self, rid, boxes) -> bool:
         """把识别结果写回指定历史记录并刷新面板。
 
@@ -282,11 +292,7 @@ class HistoryMixin:
         except Exception as e:  # noqa: BLE001
             log.exception("更新历史记录 OCR 结果失败 #%s: %s", rid, e)
             return False
-        if self._history_panel is not None and self._panel_alive(self._history_panel):
-            try:
-                self._history_panel.reload()
-            except Exception:  # noqa: BLE001
-                pass
+        self._reload_history_panel()
         return ok
 
 
@@ -304,37 +310,85 @@ class HistoryMixin:
                              "识别中…（首次加载模型约 1-3s）"))
 
 
-    def _save_record(self, ov):
-        """将当前截图落库（纯保存，不展示）。已存过则跳过。"""
+    def _save_record(self, ov, on_saved=None):
+        """将当前截图落库（纯保存，不展示）。已存过则跳过。
+
+        **编码 + 落库已下沉后台线程**（4K PNG/webp 编码 100–300ms，原先压在
+        主线程：截图完成、点收藏、退出标注都会顿一下）。因此契约变了：
+
+        - `ov.history_id` **要等保存回来才有值**，本函数返回时通常仍是 None；
+        - 「保存完还要接着做点什么」的调用方必须把后续动作作为 `on_saved(rid)`
+          传进来，不能存完自己往下写（那会拿到 None 或旧值）；
+        - 已存过的窗口 `on_saved` **立即同步执行**，行为与改前完全一致。
+
+        同一窗口只允许一次在途保存（`_save_pending`）：异步窗口期里重复调用
+        会看到 `history_id` 还是 None，不拦住就会给同一张图落两条记录。
+        此时的 `on_saved` 挂到已有任务上一起跑，不会丢。
+        """
         if ov is None or self.history is None:
             return
-        if getattr(ov, "history_id", None) is not None:
+        rid = getattr(ov, "history_id", None)
+        if rid is not None:
+            if on_saved is not None:
+                on_saved(rid)
             return
-        try:
-            img = getattr(ov, "img", None)
-            if img is None:
-                return
-            ok, ext, image_bytes, thumb_bytes = self._encode_image_pair(img)
-            if not ok:
-                return
-            boxes = getattr(ov, "boxes", []) or []
-            # M2+++ QR 存储定稿：内容进 ocr_text（[QR] 前缀行）、几何进
-            # ocr_boxes（kind="qr"），不新建字段（见 _record_ocr_payload）
-            ocr_text, ocr_boxes = self._ocr_payload_for_save(ov, boxes)
-            # 执行记录（实际档位/生效设备）：本窗口跑过识别才有值，否则空串
-            _tier, _dev = self._save_ocr_meta(ov)
-            rid = self.history.save(
-                image_bytes=image_bytes, thumb_bytes=thumb_bytes,
-                ocr_text=ocr_text, ocr_boxes=ocr_boxes,
-                model_tier=_tier, device=_dev,
-                ext=ext,
-                name_pattern=self.config.get("software",
-                                             "name_pattern", ""),
-            )
-            ov.history_id = rid   # 供 Ctrl+R 覆盖同一记录
-            log.info("已保存历史记录 #%s（%d 块文字）", rid, len(boxes))
-        except Exception as e:  # noqa: BLE001
-            log.exception("保存历史记录失败: %s", e)
+        if getattr(ov, "_save_pending", False):
+            if on_saved is not None:
+                cbs = getattr(ov, "_save_cbs", None)
+                if cbs is None:
+                    ov._save_cbs = cbs = []
+                cbs.append(on_saved)
+            return
+        img = getattr(ov, "img", None)
+        if img is None:
+            return
+        # 以下三步都必须在主线程做完：读 ov.boxes / 读引擎运行信息 / 读配置。
+        # 任务里只放纯数据（numpy 图 + 字符串 + JSON 友好结构），不放 ov。
+        boxes = getattr(ov, "boxes", []) or []
+        # M2+++ QR 存储定稿：内容进 ocr_text（[QR] 前缀行）、几何进
+        # ocr_boxes（kind="qr"），不新建字段（见 _record_ocr_payload）
+        ocr_text, ocr_boxes = self._ocr_payload_for_save(ov, boxes)
+        # 执行记录（实际档位/生效设备）：本窗口跑过识别才有值，否则空串
+        _tier, _dev = self._save_ocr_meta(ov)
+        # 续作放在**闭包持有的 list** 里而不是只挂在 ov 上：窗口可能在保存
+        # 回来之前就被关闭并 deleteLater，那时从 ov 上读属性会抛
+        # RuntimeError（已销毁的 C++ 对象），续作（如收藏）就丢了
+        cbs = [on_saved] if on_saved is not None else []
+        ov._save_pending = True
+        ov._save_cbs = cbs
+        self._saveq.submit(
+            img,
+            ocr_text=ocr_text, ocr_boxes=ocr_boxes,
+            model_tier=_tier, device=_dev,
+            name_pattern=self.config.get("software", "name_pattern", ""),
+            on_done=lambda rid_, _ov=ov, _cbs=cbs: self._on_save_done(_ov, rid_, _cbs),
+            on_failed=lambda msg, _ov=ov: self._on_save_failed(_ov, msg),
+        )
+
+    def _on_save_done(self, ov, rid: int, cbs: list):
+        """后台保存成功（主线程）：回填 history_id → 清在途标记 → 跑续作。"""
+        if self._panel_alive(ov):
+            try:
+                ov.history_id = rid   # 供 Ctrl+R 覆盖同一记录
+                ov._save_pending = False
+                ov._save_cbs = []
+            except Exception:         # noqa: BLE001 属性写不进去也不能影响续作
+                log.exception("回填 history_id 失败（rid=%s）", rid)
+        log.info("已保存历史记录 #%s", rid)
+        for cb in cbs:
+            try:
+                cb(rid)
+            except Exception:         # noqa: BLE001 单条续作失败不影响其余
+                log.exception("保存后续动作失败（rid=%s）", rid)
+
+    def _on_save_failed(self, ov, msg: str):
+        """后台保存失败（主线程）：清在途标记，让后续操作还能重试保存。"""
+        if self._panel_alive(ov):
+            try:
+                ov._save_pending = False
+                ov._save_cbs = []
+            except Exception:         # noqa: BLE001
+                pass
 
 
     def _ensure_save(self, ov):
@@ -392,7 +446,6 @@ class HistoryMixin:
         ov = self._live_overlay()   # 统一存活校验（见 FloatMixin._live_overlay）
         if ov is None:
             return
-        self._save_record(ov)   # Ctrl+R 重新 OCR = 操作，确保落库
         # 优先用贴图窗口保存的原始截图重新识别（与表格识别 _table_recognize 一致）：
         # 重新抓屏会抓到窗口自身（遮挡）、历史恢复时 raw_bbox 已失效（区域早非原内容），
         # 导致识别错乱；ov.img 即「当初截图/恢复时的原始图像」。
@@ -405,8 +458,11 @@ class HistoryMixin:
                     "ClickOCR", T("hist.regrab_fail", "重新截图失败：") + str(e),
                     QSystemTrayIcon.Warning, 3000)
                 return
-        rid = ov.history_id
-        self._submit_ocr(ov, rid, img, "reocr")
+        # Ctrl+R 重新 OCR = 操作，确保落库；**提交重识别必须等 id 就绪**——
+        # 保存已下沉后台，否则这里拿到的 rid 是 None，识别结果会写不回原记录
+        # （历史恢复的图会永远停在「待识别」）。
+        self._save_record(
+            ov, on_saved=lambda rid: self._submit_ocr(ov, rid, img, "reocr"))
 
 
     def _on_reocr_done(self, ov, rid, boxes, img):
@@ -429,8 +485,14 @@ class HistoryMixin:
     # ---- M2（由 M4 提前）：表格识别 ----
 
     def _save_annotations(self, ov, json_text: str):
-        self._save_record(ov)   # 标注前确保历史记录已存在（标注需 history_id）
-        rid = getattr(ov, "history_id", None)
+        # 标注要写进记录，必须先有 history_id；而保存已下沉后台，本函数返回时
+        # id 通常还没回来 → 把「写标注」作为续作交给保存完成回调。
+        # （记录已存在时续作会立即同步执行，与改前的行为一致。）
+        self._save_record(
+            ov, on_saved=lambda rid: self._write_annotations(rid, json_text))
+
+    def _write_annotations(self, rid: int, json_text: str):
+        """把标注 JSON 写进指定记录，并刷新面板顺序（该记录被置顶）。"""
         if not rid or self.history is None:
             return
         try:
@@ -439,11 +501,7 @@ class HistoryMixin:
         except Exception as e:  # noqa: BLE001
             log.exception("保存标注失败: %s", e)
         # 标注更新了操作时间 → 若历史面板打开则刷新顺序（该记录置顶）
-        if self._history_panel is not None and self._panel_alive(self._history_panel):
-            try:
-                self._history_panel.reload()
-            except Exception:  # noqa: BLE001
-                pass
+        self._reload_history_panel()
 
 
     def _favorite_overlay(self, ov):
@@ -453,23 +511,27 @@ class HistoryMixin:
             return
         rid = getattr(ov, "history_id", None)
         if rid is None:
-            # 未保存过 → 复用 _save_record 落库再收藏。
-            # 原先这里手写了一份保存逻辑（不走 _ocr_payload_for_save），
-            # 是三处落库实现中唯一漏掉 kind 字段的——二维码截图直接点收藏
-            # 时 QR 标记丢失，恢复后退化为普通文字。
-            self._save_record(ov)
-            rid = getattr(ov, "history_id", None)
-            if rid is None:
-                return                    # 落库失败（_save_record 内已记日志）
-            self.history.set_favorite(rid, True)
-            self._sync_favorite(rid, True)
+            # 未保存过 → 先落库再收藏。收藏动作**必须在 id 就绪后执行**：
+            # 保存已下沉后台，这里不能再假设 _save_record 返回时 id 已有值。
+            # 原先这里手写了一份保存逻辑（不走 _ocr_payload_for_save），是三处
+            # 落库实现中唯一漏掉 kind 字段的——二维码截图直接点收藏时 QR 标记
+            # 丢失、恢复后退化为普通文字；现已统一走 _save_record。
+            self._save_record(ov, on_saved=lambda r: self._set_favorite(r, True))
             return
         # 已有记录：切换收藏状态（收藏 ↔ 取消收藏）
         rec = self.history.get(rid)
         fav = bool(rec and rec["is_favorite"])
-        new_fav = not fav
-        self.history.set_favorite(rid, 1 if new_fav else 0)
-        self._sync_favorite(rid, new_fav)
+        self._set_favorite(rid, not fav)
+
+
+    def _set_favorite(self, rid: int, fav: bool):
+        """写收藏状态 + 同步全部相关 UI（收藏/取消收藏的唯一出口）。
+
+        抽出来是因为两条入口（已有记录切换 / 保存后续作）都要做这两步，
+        原先第二条把「写库」和「同步 UI」写在 _favorite_overlay 内联处。
+        """
+        self.history.set_favorite(rid, 1 if fav else 0)
+        self._sync_favorite(rid, fav)
 
 
     def _sync_favorite(self, rid, fav: bool):
@@ -477,11 +539,7 @@ class HistoryMixin:
         - 已打开的历史面板刷新列表（反映最新收藏状态，含收藏 Tab 增删）
         - 匹配 rid 的贴图/钉图窗口状态栏星标同步（含触发源）"""
         # 1) 历史面板：若打开则刷新（幂等；收藏 Tab 需重建以增删条目）
-        if self._history_panel is not None and self._panel_alive(self._history_panel):
-            try:
-                self._history_panel.reload()
-            except Exception:  # noqa: BLE001
-                pass
+        self._reload_history_panel()
         # 2) 贴图/钉图窗口：匹配 rid 的工具栏星标同步（先验活：钉图态关窗后
         #    _pins 可能短暂残留死引用，对其访问 _toolbar 会抛 RuntimeError）
         for ov in list(self._overlays) + list(self._pins):

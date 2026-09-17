@@ -283,5 +283,39 @@ class TestSchemaMigration(_TmpDb):
         self.assertEqual([r["updated_at"] for r in rows], [r["updated_at"] for r in rows2])
 
 
+class TestNoOrphanFiles(_TmpDb):
+    """文件与记录必须一一对应：purge/delete 只清「记录里的文件」，
+    任何没被记录引用的截图文件都是**永久孤儿**（磁盘只涨不降）。"""
+
+    def _orphans(self, hs):
+        referenced = {r["screenshot_path"] for r in hs.list(1000)}
+        on_disk = {p.name for p in hs.screenshots_dir.glob("*.png")}
+        return on_disk - referenced
+
+    def test_thumb_write_failure_keeps_record_and_no_orphan(self):
+        """缩略图写不进去时：记录照常保存、截图有记录引用（原先会抛出去留孤儿）。"""
+        from unittest import mock
+        hs = self.store()
+        with mock.patch("pathlib.Path.write_bytes",
+                        side_effect=OSError("disk full")):
+            rid = hs.save(_IMG, b"thumb-bytes", "文字", None, "tiny", "cpu")
+        self.assertIsNotNone(hs.get(rid), "缩略图失败不该让整条记录丢失")
+        self.assertEqual(self._orphans(hs), set(), "留下了没有记录引用的截图文件")
+        self.assertTrue((hs.screenshots_dir / hs.get(rid)["screenshot_path"]).exists())
+
+    def test_normal_save_has_no_orphan(self):
+        hs = self.store()
+        for _ in range(3):
+            hs.save(_IMG, b"thumb-bytes", "", None, "", "")
+        self.assertEqual(self._orphans(hs), set())
+
+    def test_clear_leaves_no_orphan(self):
+        hs = self.store()
+        for _ in range(3):
+            hs.save(_IMG, b"t", "", None, "", "")
+        hs.clear()
+        self.assertEqual(self._orphans(hs), set(), "清空历史后截图文件应一并删除")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

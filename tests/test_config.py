@@ -101,5 +101,88 @@ class TestFactoryTemplate(unittest.TestCase):
                           "模板不得被改写")
 
 
+class TestWindowQuotaKeyRename(unittest.TestCase):
+    """2026-09-18 键名消歧：`max_history_windows`/`max_hist_windows` →
+
+    `max_shot_windows`（截图贴图，默认 1）/ `max_restore_windows`（历史贴图，默认 3）。
+    旧名只差 3 个字符、语义又都带 "history"，历次代码审查都误判成「改名遗留的
+    重复键」—— 改名是为了让名字本身说清归属；旧键由 `_LEGACY_MAP` 搬家，用户
+    现有取值**不能丢**（丢 = 静默重置成默认值）。
+    """
+
+    def _write(self, tmp: Path, text: str) -> ConfigManager:
+        p = tmp / "config.ini"
+        p.write_text(text, encoding="utf-8")
+        return ConfigManager(path=p)
+
+    def test_old_names_migrate_with_values(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = self._write(Path(td), "[software]\n"
+                                        "max_history_windows = 7\n"
+                                        "max_hist_windows = 9\n")
+            self.assertEqual(cfg.getint("software", "max_shot_windows", -1), 7)
+            self.assertEqual(cfg.getint("software", "max_restore_windows", -1), 9)
+            self.assertFalse(cfg.cp.has_option("software", "max_history_windows"),
+                             "旧键应被清掉，否则下次审查还会看到两个「同义键」")
+            self.assertFalse(cfg.cp.has_option("software", "max_hist_windows"))
+
+    def test_rename_is_idempotent(self):
+        """已迁移过的配置再加载一次，取值保持不变（迁移不得反复覆盖）。"""
+        with tempfile.TemporaryDirectory() as td:
+            cfg = self._write(Path(td), "[software]\nmax_shot_windows = 4\n")
+            self.assertEqual(cfg.getint("software", "max_shot_windows", -1), 4)
+            cfg2 = ConfigManager(path=Path(td) / "config.ini")
+            self.assertEqual(cfg2.getint("software", "max_shot_windows", -1), 4)
+
+    def test_new_key_wins_over_stale_old_key(self):
+        """两键同时存在时以**新键**为准：旧键只清不覆盖。
+
+        否则「旧值回退」会把用户改过的新设置顶掉（改名类迁移的典型坑）。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            cfg = self._write(Path(td), "[software]\n"
+                                        "max_shot_windows = 5\n"
+                                        "max_history_windows = 99\n")
+            self.assertEqual(cfg.getint("software", "max_shot_windows", -1), 5)
+
+    def test_defaults_match_documented_pair(self):
+        """两个键的默认值必须与「截图贴图 1 / 历史贴图 3」的既有行为一致。"""
+        self.assertEqual(_DEFAULTS["software"]["max_shot_windows"], "1")
+        self.assertEqual(_DEFAULTS["software"]["max_restore_windows"], "3")
+
+
+class TestLoggingSetup(unittest.TestCase):
+    """日志初始化在 **windowed 打包**下也必须能用：那时 `sys.stdout is None`。"""
+
+    def test_no_console_when_stdout_missing(self):
+        import logging
+        import sys
+        from unittest import mock
+
+        from core_engine import logging_setup as ls
+
+        with tempfile.TemporaryDirectory() as td:
+            # setup_logging 幂等（_INITIALIZED 为真就直接返回）：强制重跑一次
+            logger = ls.get_logger()
+            for h in list(logger.handlers):
+                logger.removeHandler(h)
+                h.close()
+            ls._INITIALIZED = False
+            with mock.patch.object(sys, "stdout", None):
+                logger = ls.setup_logging(app_root=td, level=logging.INFO,
+                                          console=True)
+            streams = [h for h in logger.handlers
+                       if isinstance(h, logging.StreamHandler)
+                       and not isinstance(h, logging.FileHandler)]
+            self.assertFalse(streams, "sys.stdout 为 None 时不该挂流式 handler"
+                                      "（每条日志都会走一遍异常路径）")
+            logger.info("windowed 下写日志不该出错")     # 不抛即通过
+            self.assertIn("windowed", (Path(td) / "logs" / "clickocr.log")
+                          .read_text(encoding="utf-8"))
+            for h in list(logger.handlers):              # 别污染其它用例
+                logger.removeHandler(h)
+                h.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

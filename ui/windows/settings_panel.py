@@ -12,30 +12,22 @@
 """
 from __future__ import annotations
 
-import json
-import time
 from pathlib import Path
 
 from core_engine.logging_setup import get_logger
 
 log = get_logger("settings")
 
-from PySide6.QtCore import Qt, Signal, QSize, QUrl
-from PySide6.QtGui import QKeyEvent, QDesktopServices
 from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QVBoxLayout,
-                               QTabWidget, QWidget, QCheckBox, QComboBox,
-                               QLineEdit, QSpinBox, QLabel, QPushButton,
-                               QApplication, QFileDialog, QScrollArea, QFrame,
-                               QSlider)
+                               QTabWidget, QWidget, QPushButton,
+                               QApplication, QScrollArea, QFrame)
 
 from config import ConfigManager
 from ui.base.card_window import CardWindow
 from ui.base.texts import T
+from ui.windows.settings.widgets import Problem   # 问题项消息标记（见 _save）
 from ui.base.theme import apply_theme, resolve_theme
 from ui.base.theme_dialog import ThemeDialog
-from ui.base.widgets import (ThemeSpinBox, ColorButton as _ColorButton,
-                             FitComboBox)
-from ui.windows.settings.widgets import _ModBox, _ShortcutRowEdit, KeyCaptureEdit
 from ui.windows.settings.software_tab import SoftwareTabMixin
 from ui.windows.settings.ui_tab import UiTabMixin
 from ui.windows.settings.hotkey_tab import HotkeyTabMixin
@@ -44,7 +36,8 @@ from ui.windows.settings.hotkey_tab import HotkeyTabMixin
 class SettingsPanel(SoftwareTabMixin, UiTabMixin, HotkeyTabMixin, CardWindow):
     def __init__(self, config: ConfigManager, hotkey_host=None,
                  history_storage=None, parent=None, tray=None,
-                 on_clear_history=None, on_model_changed=None):
+                 on_clear_history=None, on_model_changed=None,
+                 on_drop_ocr_changed=None):
         super().__init__(title=T("settings.title", "ClickOCR 设置"), with_close=True)
         self.setMinimumWidth(400)
         self._cfg = config
@@ -58,6 +51,9 @@ class SettingsPanel(SoftwareTabMixin, UiTabMixin, HotkeyTabMixin, CardWindow):
         # 模型档位旧值：_save 检测变化后调 App 回调热切换引擎（仅重建内部引擎）
         self._model_set_old = self._cfg.get("software", "ocr_model", "v6-tiny")
         self._on_model_changed = on_model_changed  # App 回调：模型档位切换
+        # App 回调：本页改了「拖入图片后自动 OCR」→ 请同步历史面板角标
+        # （反向由 HistoryPanel.on_drop_ocr_changed 触发，见 sync_drop_ocr_checkbox）
+        self._on_drop_ocr_changed = on_drop_ocr_changed
 
         self.card_lay.setSpacing(10)
         # 注意：QTabWidget 必须保存为 self 属性（局部变量会被 PySide6 GC 连带
@@ -188,10 +184,11 @@ class SettingsPanel(SoftwareTabMixin, UiTabMixin, HotkeyTabMixin, CardWindow):
             msgs += effect() or []
 
         # 校验/执行类消息反馈：热键被占用、格式无效、自启失败等原本全部
-        # 被吞掉、用户一律只看到「已保存」——信任级缺陷。按关键字挑出问题项
-        # 弹窗提示（正常项仍走气泡，避免 30+ 条刷屏）。
-        problems = [m for m in msgs if any(
-            k in m for k in ("失败", "无效", "占用"))]
+        # 被吞掉、用户一律只看到「已保存」——信任级缺陷。按 `Problem` 标记挑出
+        # 问题项弹窗提示（正常项仍走气泡，避免 30+ 条刷屏）。
+        # 标记由产生处打（见 ui/windows/settings/widgets.Problem）；**不再按文案
+        # 关键词反推** —— 那既会被正常文案里的词误伤，也会在 i18n 改措辞后静默失效。
+        problems = [m for m in msgs if isinstance(m, Problem)]
         if problems:
             try:
                 ThemeDialog.warning(
@@ -294,6 +291,15 @@ class SettingsPanel(SoftwareTabMixin, UiTabMixin, HotkeyTabMixin, CardWindow):
         qr_on = self.chk_qr.isChecked()
         self._set("software", "enable_qr", "true" if qr_on else "false")
         msgs.append("二维码识别：" + ("开" if qr_on else "关"))
+        # 「拖入图片后自动 OCR」有两个入口（本页勾选框 / 历史面板标签栏角标），
+        # 唯一真值源是 [software] drop_ocr_auto。落盘成功后通知 App 把**另一处**
+        # 的显示刷成一致 —— 否则在设置里改完，历史面板角标仍停在旧状态，用户
+        # 以为没生效，再去点一下反而又改回去（last-writer-wins）。
+        def _eff_drop_ocr():
+            if self._on_drop_ocr_changed is not None:
+                self._on_drop_ocr_changed()
+            return []
+        pending.append(_eff_drop_ocr)
         # ---- 截图无操作也保存（[software] save_no_op_close）----
         noop = self.chk_save_no_op.isChecked()
         self._set("software", "save_no_op_close",
@@ -309,15 +315,15 @@ class SettingsPanel(SoftwareTabMixin, UiTabMixin, HotkeyTabMixin, CardWindow):
             if _set_auto(autostart):
                 return [T("ui.msg_autostart", "开机自启：")
                         + ("开" if autostart else "关")]
-            return [T("ui.msg_autostart_fail", "开机自启设置失败")]
+            return [Problem(T("ui.msg_autostart_fail", "开机自启设置失败"))]
         pending.append(_eff_autostart)
 
         # ---- 截图贴图最大数量 ----
-        self._set("software", "max_history_windows",
+        self._set("software", "max_shot_windows",
                   str(self.spin_max_shot.value()))
         msgs.append(f"截图贴图：{self.spin_max_shot.value()}")
         # ---- 历史贴图最大数量（从历史恢复的图）----
-        self._set("software", "max_hist_windows",
+        self._set("software", "max_restore_windows",
                   str(self.spin_max_hist.value()))
         msgs.append(f"历史贴图：{self.spin_max_hist.value()}")
         # ---- 钉图数量上限 ----
@@ -392,13 +398,19 @@ class SettingsPanel(SoftwareTabMixin, UiTabMixin, HotkeyTabMixin, CardWindow):
         msgs.append(f"窗口边框：{self.btn_overlay_color.color} "
                     f"{self.spin_overlay_width.value()}px")
 
-        # ---- 二维码边框 / 表格边框颜色 ----
+        # ---- 二维码边框 / 表格边框颜色 + 线宽 ----
         self._set("ui", "qr_border_color",
                   ",".join(map(str, self.btn_qr_color.color)))
-        msgs.append(f"二维码边框：{self.btn_qr_color.color} ")
+        self._set("ui", "qr_border_width",
+                  str(self.spin_qr_width.value()))
+        msgs.append(f"二维码边框：{self.btn_qr_color.color} "
+                    f"{self.spin_qr_width.value()}px")
         self._set("ui", "table_border_color",
                   ",".join(map(str, self.btn_table_color.color)))
-        msgs.append(f"表格边框：{self.btn_table_color.color} ")
+        self._set("ui", "table_border_width",
+                  str(self.spin_table_width.value()))
+        msgs.append(f"表格边框：{self.btn_table_color.color} "
+                    f"{self.spin_table_width.value()}px")
 
         # ---- 识别文字蓝色框默认显示 ----
         self._set("ui", "show_text_boxes",
@@ -460,7 +472,7 @@ class SettingsPanel(SoftwareTabMixin, UiTabMixin, HotkeyTabMixin, CardWindow):
             elif parser is not None:
                 if combo not in ("off", "none", "false") \
                         and parser(combo) is None:
-                    msgs.append(invalid or f"{_lbl} 快捷键格式无效")
+                    msgs.append(Problem(invalid or f"{_lbl} 快捷键格式无效"))
                 else:
                     self._set(_sec, _key, combo)
                     msgs.append(f"{_lbl}：{combo}")
@@ -493,7 +505,7 @@ class SettingsPanel(SoftwareTabMixin, UiTabMixin, HotkeyTabMixin, CardWindow):
             try:
                 self._cfg.save()
             except OSError as e:
-                msgs.append(T("ui.msg_save_fail", "保存失败：{}").format(e))
+                msgs.append(Problem(T("ui.msg_save_fail", "保存失败：{}").format(e)))
         return msgs
 
 

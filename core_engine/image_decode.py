@@ -97,7 +97,11 @@ def decode_image_bytes(data) -> "np.ndarray | None":
         from PIL import Image, ImageOps
         import io as _io
         register_heif_opener()
-        with Image.open(_io.BytesIO(bytes(buf.tobytes()))) as im:
+        # PIL 要 bytes：原输入本来就是 bytes 类时直接用，别经 ndarray 再 tobytes
+        # 整图拷一份（HEIC 原图常见 10MB+，回退路径峰值内存会翻倍）。
+        raw = (data if isinstance(data, (bytes, bytearray, memoryview))
+               else bytes(buf.tobytes()))
+        with Image.open(_io.BytesIO(raw)) as im:
             ori = im.info.get("original_orientation")
             if ori and int(ori) != 1:
                 im = apply_exif_orientation(im, ori)    # HEIC / HEIF 专用

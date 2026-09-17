@@ -44,7 +44,10 @@ def setup_logging(app_root: str | Path | None = None,
     fh.setFormatter(fmt)
     logger.addHandler(fh)
 
-    if console:
+    if console and sys.stdout is not None:
+        # windowed 打包（PyInstaller --windowed / console=False）下 **sys.stdout 是 None**：
+        # 这时 StreamHandler 每次 emit 都会抛异常，logging 内部捕获后往「错误输出」
+        # 报错——而 stderr 同样是 None，于是每条日志都白跑一趟异常路径（还污染日志）。
         sh = logging.StreamHandler(sys.stdout)
         sh.setFormatter(fmt)
         logger.addHandler(sh)

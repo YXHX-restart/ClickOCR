@@ -127,10 +127,14 @@ class TableViewMixin:
             return
         # 每个网格格画一个矩形框（边界共享、无重叠，体验同表格窗口网格线）
         c = self._table_border_color
+        # 线宽可配（[ui] table_border_width，与「截图边框」同一处设置）；
+        # 注意网格线是相邻格共享边，线宽加到 2 以上时相邻两条线会叠在一起
+        # 显得更粗 —— 这是共享边界的固有表现，预览与导出观感一致。
+        w = self._table_border_width
         for y0, y1 in self._table_rows:
             for x0, x1 in self._table_cols:
                 item = QGraphicsRectItem(QRectF(x0, y0, x1 - x0, y1 - y0))
-                item.setPen(QPen(QColor(c.red(), c.green(), c.blue(), 170), 1))
+                item.setPen(QPen(QColor(c.red(), c.green(), c.blue(), 170), w))
                 item.setBrush(QBrush(Qt.NoBrush))
                 item.setZValue(1)   # 第 2 层（表格网格，同 OCR 层）
                 item.setVisible(False)

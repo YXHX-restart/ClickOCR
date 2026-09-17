@@ -150,7 +150,12 @@ class AnnoMixin:
             self._toolbar.set_anno_mode(False)   # 收起工具段（含关闭子浮层）
             self._toolbar.btn_anno.setChecked(False)  # 取消高亮
         if self._anno is not None:
-            self.annotations_changed.emit(self._anno.json())
+            # 空会话不发信号：annotations_changed → _save_annotations → _save_record
+            # 会**无条件落库**，于是「误触进入标注模式再按 Esc」也会凭空造出一条
+            # 空标注历史记录。没有任何标注时退出 = 无操作，「无操作是否落库」
+            # 归 [software] save_no_op_close 管，不在这里绕过去。
+            if self._anno.data:
+                self.annotations_changed.emit(self._anno.json())
         self._set_status("已退出标注模式")
 
     def _anno_undo(self):

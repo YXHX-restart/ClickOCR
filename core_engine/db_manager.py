@@ -205,7 +205,10 @@ class DBManager:
 
     def __init__(self, db_path: str | Path, enable_vec0: bool = True):
         self.db_path = Path(db_path)
-        self._write_lock = threading.Lock()
+        # RLock 而非 Lock：`_write(fn)` 里的 fn 是对调用方开放的任意闭包，一旦
+        # 某个 fn 内部再走一次写（写套写），普通 Lock 会**自锁死**（同线程不可
+        # 重入）→ 整个 DB 层静默卡死、UI 无响应。当前无此调用，属防未来踩坑。
+        self._write_lock = threading.RLock()
         self._tls = threading.local()
         self.vec0_available = False
         self._vec0_enabled = enable_vec0
@@ -231,8 +234,7 @@ class DBManager:
         """关闭**当前线程**的连接（幂等）。
 
         不提供跨线程关闭：对别的线程正在使用的连接调用 close() 会让它正在跑的
-        语句崩掉。其它线程的连接在其线程结束后由 GC 关闭（`sqlite3.Connection`
-        析构会 close）。
+        语句崩掉。
         """
         conn = getattr(self._tls, "conn", None)
         if conn is None:
@@ -242,6 +244,22 @@ class DBManager:
         except Exception:                # noqa: BLE001 已关闭/句柄失效：忽略
             pass
         self._tls.conn = None
+
+    def close_thread_conn(self) -> None:
+        """线程收尾时释放本线程的连接（语义同 `close()`，名字表明用途）。
+
+        **为什么必须显式调用**：本方法原先的说明写着「其它线程的连接在其线程
+        结束后由 GC 关闭」—— 这条**对 QThread 不成立**。`threading.local` 的
+        按线程数据是在 `threading` 模块的线程收尾钩子里清理的，而 QThread 是
+        原生线程：PySide6 只为它建立 Python 线程状态，不走那套钩子，于是
+        `_tls` 里那条连接会一直留到**进程退出**。
+        实测表现（本仓 Windows）：后台线程跑完后 sqlite 文件（含 -wal/-shm）
+        一直被占用 —— 删临时目录报 `WinError 32`，外部工具也打不开库。
+
+        故：**凡自己起 QThread 且碰过 DB 的地方，都要在 run() 收尾时调它**
+        （见 appmod/workers.py 里各 worker 的 finally）。
+        """
+        self.close()
 
     def _write(self, fn):
         """在写锁内执行 `fn(conn)` 并提交；异常回滚。
@@ -317,10 +335,36 @@ class DBManager:
                          "ON screenshot_history(is_favorite, updated_at DESC)")
 
     def _try_create_vec0(self, conn: sqlite3.Connection):
+        """建 vec0 虚拟表（可选能力，M6 用）。
+
+        `load_extension` 会**执行任意本地动态库**，是 SQLite 里最危险的一个开关，
+        故这里给它加了来源约束与及时复原：
+
+        1) 只加载**位于 sqlite_vec 包目录内**的扩展文件。路径来自
+           `sqlite_vec.loadable_path()`，理论上就在包内；显式校验一次是因为
+           一旦该函数（或某个仿冒包）返回包外路径，就等于加载任意 DLL。
+        2) 加载完立刻 `enable_load_extension(False)` 复原。连接是**线程内长连接**
+           （见类文档），开关若一直开着，此后这个连接上任何一句 SQL 都能再
+           `load_extension()` —— 而 SQL 是拼接来的（尽管当前全部参数化）。
+        """
         try:
             import sqlite_vec
+            ext = Path(sqlite_vec.loadable_path()).resolve()
+            pkg = Path(sqlite_vec.__file__).resolve().parent
+            # loadable_path() 给的是**不含平台后缀**的基名
+            # （实测：.../site-packages/sqlite_vec/vec0，真实文件是 vec0.dll），
+            # 后缀由 SQLite 自己补 —— 所以不能对基名直接 is_file()。
+            real = next((p for p in (ext, *ext.parent.glob(ext.name + ".*"))
+                         if p.is_file()), None)
+            if real is None or pkg not in real.parents:
+                self.vec0_available = False
+                logger.warning("sqlite-vec 扩展不存在或不在包目录内，拒绝加载：%s", ext)
+                return
             conn.enable_load_extension(True)
-            conn.load_extension(sqlite_vec.loadable_path())
+            try:
+                conn.load_extension(str(ext))   # 传基名，平台后缀由 SQLite 补
+            finally:
+                conn.enable_load_extension(False)   # 复原：不给连接留后门
             conn.execute(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS image_embedding_vec "
                 "USING vec0(embedding float[512])")
@@ -583,18 +627,35 @@ class HistoryStorage:
         else:
             raise OSError(f"无法为截图分配唯一文件名（重名过多）: {stem}")
         if thumb_bytes:
-            (thumb_dir / name).write_bytes(thumb_bytes)
+            try:
+                (thumb_dir / name).write_bytes(thumb_bytes)
+            except OSError as e:
+                # 缩略图写不进去**不该让整条记录失败**（原样抛出的话，异常会冒到
+                # save() 的插库 try 之外 —— 截图文件已经落盘、却没有任何记录引用它，
+                # 而 purge/delete 只清「记录里的文件」→ 永久孤儿，磁盘只涨不降）。
+                # 截图本身是好的，历史面板回退到原图即可；顺手清掉可能写了一半的
+                # 缩略图，避免面板拿到半张图。
+                logger.warning("缩略图写入失败（记录仍保存，面板回退原图）：%s → %s",
+                               thumb_dir / name, e)
+                try:
+                    (thumb_dir / name).unlink(missing_ok=True)
+                except OSError:          # noqa: BLE001 清不掉不该影响保存结果
+                    pass
         return name
 
-    def _delete_files(self, screenshot_path: str):
+    def _delete_files(self, screenshot_path: str) -> int:
         """删除记录关联的截图与缩略图文件（尽力而为）。
 
         以「文件名 + 当前 screenshots_dir」还原真实路径，兼容旧库中
         ``screenshots/<name>`` 前缀格式与纯文件名格式（统一取 Path.name）。
+
+        返回**删除失败的文件数**（0 = 全部删净）：批量调用方（purge/clear）
+        据此汇总上报，否则「磁盘只涨不降」只能靠逐条 warning 人工数。
         """
         name = Path(screenshot_path).name
         if not name or name in (".", ".."):
-            return
+            return 0
+        failed = 0
         for p in (self.screenshots_dir / name,
                   self.screenshots_dir / "thumb" / name):
             try:
@@ -603,8 +664,10 @@ class HistoryStorage:
                 # 尽力而为但不静默：Windows 上缩略图预览 / 杀软扫描会短暂占用
                 # 文件（极常见），删不掉只留孤儿文件而不影响记录删除，但必须
                 # 带路径留痕，否则「磁盘只涨不降」无从排查。
+                failed += 1
                 logger.warning("删除截图文件失败（文件可能被占用）: %s", p,
                                exc_info=True)
+        return failed
 
     def _write_update(self, sql: str, params, what: str) -> bool:
         """写回类操作的**唯一**失败出口：记 warning（含堆栈）后返回 False。
@@ -728,8 +791,12 @@ class HistoryStorage:
             marks = ",".join("?" * len(ids))
             self.db.execute(
                 f"DELETE FROM screenshot_history WHERE id IN ({marks})", tuple(ids))
-        for d in doomed:
-            self._delete_files(d["screenshot_path"])
+        # 记录已删（提交完成）→ 文件删不掉只能留孤儿：这里汇总数量，
+        # 让「磁盘只涨不降」可被一条日志量化，而不是淹在逐条 warning 里。
+        orphans = sum(self._delete_files(d["screenshot_path"]) for d in doomed)
+        if orphans:
+            logger.warning("FIFO 清理已删除 %d 条记录，但残留 %d 个孤儿文件"
+                           "（文件被占用，需人工清理）", len(ids), orphans)
         return len(ids)
 
     # ---- 读取 ----

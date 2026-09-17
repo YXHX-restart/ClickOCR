@@ -1,6 +1,11 @@
 .venv/
 .venv_broken/
+# 各 GPU 变体用的独立虚拟环境（实测本机存在 .venv-dml/）：漏掉它会被
+# 一次 `git add -A` 整个写进仓库
+.venv-*/
 __pycache__/
+# ruff 的缓存目录（跑 `ruff check` 会生成）
+.ruff_cache/
 *.pyc
 *.pyo
 *.egg-info/
@@ -16,6 +21,11 @@ build/
 dist/
 logs/
 *.db
+# SQLite 的 WAL 旁挂文件：库名是 *.db 但它们是 *.db-wal / *.db-shm，
+# 只写 *.db 挡不住（实测它们会出现在 git status 里）
+*.db-wal
+*.db-shm
+*.db-journal
 *.db.bak*
 screenshots/
 screenshots_*/

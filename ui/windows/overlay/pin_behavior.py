@@ -28,7 +28,12 @@ class PinMixin:
         False 恢复全部浮层。钉子定位由 app._pin_overlay 统一处理。"""
         self._pinned = pinned
         if pinned:
-            self.btn_close.hide()          # 关闭按钮消失
+            # getattr 防御：closeEvent 会把 btn_close 置 None，而 PinDot 是独立
+            # 顶层窗，其信号（点钉子）可能晚于关窗送达 —— 直接属性访问会
+            # AttributeError（关图瞬间点钉子概率性崩溃）。此处与同函数其它
+            # 浮层访问保持一致。
+            if getattr(self, "btn_close", None) is not None:
+                self.btn_close.hide()      # 关闭按钮消失
             if self._navigator is not None:
                 self._navigator.hide()     # 导航图一起隐藏
             if self._status_strip is not None:

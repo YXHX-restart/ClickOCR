@@ -11,7 +11,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 from PySide6.QtCore import Qt, Signal, QSize, QRect
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QGridLayout,
                                QSpinBox, QPushButton, QAbstractSpinBox,
                                QLineEdit, QComboBox, QApplication)
@@ -171,6 +170,10 @@ class ColorPickerDialog(CardWindow):
         super().__init__(title="选择颜色", with_close=True)
         self.setMinimumWidth(360)
         self._color = tuple(int(c) for c in initial)
+        # 打开时的原色：取消要回滚到它——选色是「即时生效」（picked 在每次点
+        # 色板时就发出，供调用方实时预览），所以取消必须显式发回原色，
+        # 否则「点了取消但颜色已改」。
+        self._orig = self._color
         self.card_lay.setSpacing(8)
 
         # ---- 当前色预览 + 十六进制输入 ----
@@ -209,7 +212,7 @@ class ColorPickerDialog(CardWindow):
         b_ok = QPushButton(T("btn.ok", "确定"))
         b_cancel = QPushButton(T("btn.cancel", "取消"))
         b_ok.clicked.connect(self.close)
-        b_cancel.clicked.connect(self.close)
+        b_cancel.clicked.connect(self._cancel)
         row.addStretch(1)
         row.addWidget(b_ok)
         row.addWidget(b_cancel)
@@ -218,6 +221,19 @@ class ColorPickerDialog(CardWindow):
         self._refresh()
 
     # ---- 内部 ----
+    def _cancel(self):
+        """取消：回滚到打开时的颜色（已即时生效的选择撤销），再关闭。
+
+        回滚要同时改**自身状态**——只发信号的话，调用方颜色回去了，取色器
+        内部 `_color` 还停在取消前的值，下次打开（`_refresh` 用 `_color`
+        同步显示）又会把旧值显示出来并被再次选中。
+        """
+        if tuple(self._color) != tuple(self._orig):
+            self._color = tuple(self._orig)
+            self._refresh()
+            self.picked.emit(self._color)
+        self.close()
+
     def _set(self, c: tuple):
         self._color = tuple(int(x) for x in c)
         self._refresh()
@@ -278,9 +294,11 @@ class ColorButton(QPushButton):
             self._picker = ColorPickerDialog(self._color, self)
             self._picker.picked.connect(self.set_color)
         self._picker._refresh()          # 同步按钮当前色
-        self._picker.show()
-        self._picker.raise_()
-        self._picker._centered = True    # 阻止 CardWindow 默认居中
+        # 顺序要紧：① 先置 _centered，让 CardWindow.showEvent 不再居中覆盖下方位
+        # 置；② adjustSize 让尺寸在 show **之前**就定型（未 show 的顶层窗
+        # width() 还是默认值，之前按它算坐标 → 弹出时先闪着出现在别处再跳过来）。
+        self._picker._centered = True
+        self._picker.adjustSize()
         # 锚定在按钮上方居中（空间不足则放按钮下方）；取色器随按钮所在屏
         # 夹取——原先固定主屏会让副屏上的取色器跳到主屏边缘
         scr = screen_available_geometry(self)
@@ -294,6 +312,8 @@ class ColorButton(QPushButton):
         x = max(scr.left(), min(x, scr.right() - gw))
         y = max(scr.top(), min(y, scr.bottom() - gh))
         self._picker.move(x, y)
+        self._picker.show()
+        self._picker.raise_()
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton:

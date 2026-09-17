@@ -3,6 +3,7 @@
 前三个是常驻线程：onnxruntime CUDA EP 每线程分配 ~188MiB thread-local 资源
 且线程退出不回收，所以必须单线程常驻复用、只认最新任务，禁止每次新建。
 DropImportWorker 是一次性批处理线程（导入完成后即结束，不涉及 ORT 会话）。
+HistorySaveWorker 是常驻 FIFO 线程（见其 docstring 里「为什么不能每次新建」）。
 """
 from __future__ import annotations
 
@@ -15,6 +16,99 @@ from core_engine.logging_setup import get_logger
 from ocr import RapidOcrEngine
 
 log = get_logger("app")
+
+
+def _release_thread_db(history) -> None:
+    """QThread 收尾时释放本线程的 DB 连接。
+
+    **不调就是泄漏**：`threading.local` 的按线程数据由 `threading` 的线程收尾
+    钩子清理，而 QThread 是原生线程、不走那套钩子 → 线程跑完后 `_tls` 里那条
+    sqlite 连接一直留到进程退出，文件（含 -wal/-shm）被持续占用。
+    详见 DBManager.close_thread_conn 的说明。
+    """
+    db = getattr(history, "db", None)
+    if db is None:
+        return
+    try:
+        db.close_thread_conn()
+    except Exception:            # noqa: BLE001 收尾失败不该影响线程退出
+        log.exception("释放线程 DB 连接失败")
+
+
+class HistorySaveWorker(QThread):
+    """常驻「编码 + 落库」线程：把截图/收藏/标注路径的保存移出 UI 线程。
+
+    **为什么必须常驻**（而不是每存一张 new 一个 QThread）：
+    `DBManager` 的连接是 `threading.local` 的 —— 线程结束、对象销毁才关闭
+    那条 sqlite 连接。每张图新建线程 = 每次都开一条新连接再丢弃，同时反复
+    创建/销毁 OS 线程；常驻单线程只维持一条稳定连接。
+
+    **任务不合并**（与 OcrWorker「只认最新一张」相反）：每张截图都是一条独立
+    历史记录，必须逐条按提交顺序落库，否则顺序与 id 递增都会乱。
+
+    线程内只碰 `HistoryStorage`（自带进程内锁，见 DBManager 类文档）与
+    numpy/OpenCV，**不触碰任何 Qt 对象**；需要在提交前由主线程抽成纯数据。
+    """
+
+    saved = Signal(int, int)      # (task_id, rid)
+    failed = Signal(int, str)     # (task_id, message)
+
+    def __init__(self, history):
+        super().__init__()
+        self.history = history
+        self._cond = threading.Condition()
+        self._queue: list = []
+        self._stopping = False
+
+    def submit(self, task_id: int, image, payload: dict):
+        """入队一次落库任务（FIFO）。image 为 numpy 数组，线程内只读。"""
+        with self._cond:
+            self._queue.append((task_id, image, payload))
+            self._cond.notify()
+
+    @property
+    def pending(self) -> int:
+        """尚未取走的任务数（诊断用）。"""
+        with self._cond:
+            return len(self._queue)
+
+    def stop(self):
+        """请求结束：已入队的任务**不再处理**由调用方先行 flush（见 SaveQueue.stop）。"""
+        with self._cond:
+            self._stopping = True
+            self._cond.notify()
+
+    def run(self):
+        try:
+            while True:
+                with self._cond:
+                    while not self._queue and not self._stopping:
+                        self._cond.wait()
+                    if self._stopping:
+                        return
+                    task_id, image, payload = self._queue.pop(0)
+                try:
+                    rid = self._run_one(image, payload)
+                except Exception as e:  # noqa: BLE001 单条失败不拖垮常驻线程
+                    log.exception("后台保存失败（task=%s）", task_id)
+                    self.failed.emit(task_id, str(e) or type(e).__name__)
+                    continue
+                self.saved.emit(task_id, rid)
+        finally:
+            # 线程退出前放掉本线程的 sqlite 连接（QThread 不会自动释放，见
+            # _release_thread_db）——常驻线程只在退出时做一次
+            _release_thread_db(self.history)
+
+    def _run_one(self, image, payload: dict) -> int:
+        """编码主图 + 缩略图 → 落库。返回新记录 id。"""
+        ok, ext, image_bytes, thumb_bytes = payload["encode_pair"](image)
+        if not ok or image_bytes is None:
+            raise RuntimeError("图片编码失败")
+        return self.history.save(
+            image_bytes=image_bytes, thumb_bytes=thumb_bytes,
+            ocr_text=payload["ocr_text"], ocr_boxes=payload["ocr_boxes"],
+            model_tier=payload["model_tier"], device=payload["device"],
+            ext=ext, name_pattern=payload["name_pattern"])
 
 
 class OcrWorker(QThread):
@@ -160,6 +254,57 @@ class ModelSwitchWorker(QThread):
             self.failed.emit(str(e) or type(e).__name__)
 
 
+class GpuProbeWorker(QThread):
+    """GPU 探测线程（一次性）。
+
+    `probe_dml_devices` / `probe_cuda_devices` 要建 CPU 基准 session 再逐设备
+    建 session 预热计时，实测 1~4 秒。原先在「检测」按钮回调里同步跑，靠
+    `QApplication.processEvents()` 假装不卡 —— 那只是把卡顿摊成一串重入点，
+    期间用户能再点按钮、能关窗口，重入路径没有任何保护。现整体下沉。
+
+    探测函数是纯计算（只碰 onnxruntime 与本地模型文件），不触碰 Qt。
+    """
+    done = Signal(object)      # list[dict]
+    failed = Signal(str)
+
+    def __init__(self, probe_fn, det_path=None, parent=None):
+        super().__init__(parent)
+        self._probe_fn = probe_fn
+        self._det_path = det_path
+
+    def run(self):
+        try:
+            self.done.emit(self._probe_fn(self._det_path))
+        except Exception as e:  # noqa: BLE001 单次探测失败不该结束进程
+            log.exception("GPU 探测失败")
+            self.failed.emit(str(e) or type(e).__name__)
+
+
+class HistoryClearWorker(QThread):
+    """清空历史线程（一次性）：删除 DB 记录 + 磁盘截图文件。
+
+    条数上限默认 50、实测可达数千 —— 「3000 条记录 + 逐个删文件」同步跑在
+    UI 线程会让设置页整个冻住（用户以为程序死了）。这里只碰 HistoryStorage
+    与文件系统，不触碰 Qt。
+    """
+    done = Signal(int)         # 清掉的条数
+    failed = Signal(str)
+
+    def __init__(self, history, keep_favorites: bool = True, parent=None):
+        super().__init__(parent)
+        self._history = history
+        self._keep = keep_favorites
+
+    def run(self):
+        try:
+            self.done.emit(int(self._history.clear(keep_favorites=self._keep)))
+        except Exception as e:  # noqa: BLE001
+            log.exception("清空历史失败")
+            self.failed.emit(str(e) or type(e).__name__)
+        finally:
+            _release_thread_db(self._history)   # QThread 不会自动释放（见该函数）
+
+
 class DropImportWorker(QThread):
     """拖放导入工作线程：读文件 → 解码 → 编码 → 落库（全程后台）。
 
@@ -193,19 +338,22 @@ class DropImportWorker(QThread):
     def run(self):
         added, touched = [], 0
         total = len(self._paths)
-        for i, p in enumerate(self._paths, start=1):
-            if self._stopping:
-                break
-            try:
-                rid, was_touch = self._import_one(p)
-            except Exception as e:  # noqa: BLE001 单张失败不中断整批
-                log.exception("拖放导入单张失败，跳过: %s (%s)", p, e)
-                rid, was_touch = None, False
-            if was_touch:
-                touched += 1
-            elif rid is not None:
-                added.append((rid, p))
-            self.progressed.emit(i, total)
+        try:
+            for i, p in enumerate(self._paths, start=1):
+                if self._stopping:
+                    break
+                try:
+                    rid, was_touch = self._import_one(p)
+                except Exception as e:  # noqa: BLE001 单张失败不中断整批
+                    log.exception("拖放导入单张失败，跳过: %s (%s)", p, e)
+                    rid, was_touch = None, False
+                if was_touch:
+                    touched += 1
+                elif rid is not None:
+                    added.append((rid, p))
+                self.progressed.emit(i, total)
+        finally:
+            _release_thread_db(self._history)   # QThread 不会自动释放（见该函数）
         self.finished_ok.emit(added, touched)
 
     @staticmethod

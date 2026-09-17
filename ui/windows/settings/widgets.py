@@ -11,6 +11,18 @@ from PySide6.QtWidgets import QCheckBox, QWidget, QHBoxLayout, QPushButton, QLin
 
 from ui.base.texts import T
 
+class Problem(str):
+    """「需要用户注意」的保存结果消息（失败/无效/被占用）。
+
+    原先 `_save` 靠**文本关键词**（失败/无效/占用）从事后消息里**反推**问题项：
+    正常文案里出现这些词会误报，而 i18n 一改措辞就**静默失效**（问题不再提示，
+    用户只看到「已保存」）。
+    改为在**产生处**显式标记：它仍是 `str`（下游 join / format / 托盘气泡全照旧），
+    但「是不是问题」不再取决于文案怎么写字。
+    """
+    __slots__ = ()
+
+
 class _ModBox(QCheckBox):
     """紧凑修饰键：keymod 样式把勾选框渲染为 0 宽，但 sizeHint 仍按默认
     勾选框（18px）计算会把快捷键行撑宽；覆写 sizeHint 按文字宽度。"""
@@ -73,7 +85,10 @@ class _ShortcutRowEdit(QWidget):
         self._chk.setChecked(enabled)
         low = combo.lower().replace("+", " ")
         names = ("ctrl", "alt", "shift", "win")
-        for cb, name in zip(self._mods, names):
+        # strict=True：`_mods` 与 `names` 必须**一一对应**。原先隐含依赖两边
+        # 都恰好 4 项，谁改动一边（加/删修饰键）另一方就静默错位 —— 表现是
+        # 「某个修饰键勾不上 / 存不出来」，而且不报错。这里让错位立刻炸出来。
+        for cb, name in zip(self._mods, names, strict=True):
             cb.setChecked(enabled and name in low)
         if enabled:
             self._cap.set_key(SettingsPanel._key_from_combo(combo, "a"))
@@ -84,7 +99,8 @@ class _ShortcutRowEdit(QWidget):
         if not self._chk.isChecked():
             return "off"
         parts = []
-        for cb, name in zip(self._mods, ("ctrl", "alt", "shift", "win")):
+        for cb, name in zip(self._mods, ("ctrl", "alt", "shift", "win"),
+                            strict=True):
             if cb.isChecked():
                 parts.append(name)
         parts.append(self._cap.key())
