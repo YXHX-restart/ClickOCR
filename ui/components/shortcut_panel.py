@@ -40,7 +40,7 @@ def build_shortcut_rows(cfg=None) -> list:
          T("shortcut.desc_fullscreen", "全屏截图")),
         ("global", _fmt_combo(get("hotkey_global", "history", "ctrl+`")),
          T("shortcut.desc_history", "打开历史记录")),
-        ("global", _fmt_combo(get("hotkey_global", "through", "alt+f")),
+        ("global", _fmt_combo(get("hotkey_global", "through", "off")),
          T("shortcut.desc_through", "切换贴图/钉图窗口点击穿透（鼠标落到桌面，再按取消）")),
     ]
     # ---- 截图选择（截图遮罩中）----
@@ -81,6 +81,9 @@ def build_shortcut_rows(cfg=None) -> list:
          T("shortcut.desc_table", "表格识别")),
         ("overlay", _fmt_combo(get("hotkey_overlay", "toggle_anno", "ctrl+shift+d")),
          T("shortcut.desc_anno", "进入/退出标注模式")),
+        ("overlay", _fmt_combo(get("hotkey_overlay", "toggle_through", "alt+f")),
+         T("shortcut.desc_through_local",
+           "切换点击穿透（窗口内；鼠标落到桌面，再按取消）")),
         ("overlay", (_zr := str(get("hotkey_overlay", "zoom_modifier",
                                     "ctrl")).lower()) == "off" and "未启用"
          or f"{_zr.upper()}+滚轮",

@@ -242,6 +242,7 @@ class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
             "copy_raw_image": "hotkey_overlay", "toggle_strip": "hotkey_overlay",
             "toggle_qr": "hotkey_overlay", "toggle_boxes": "hotkey_overlay",
             "toggle_table": "hotkey_overlay", "fav": "hotkey_overlay",
+            "toggle_through": "hotkey_overlay",
         }
 
         def _hk(key, default):
@@ -263,6 +264,14 @@ class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
         self._boxes_hk = _hk("toggle_boxes", "w")               # 文字框开关（仅本窗口）
         self._tool_table_hk = _hk("toggle_table", "e")          # 表格开关（仅本窗口）
         self._fav_hk = _hk("fav", "f")                          # 收藏当前截图（仅本窗口）
+        # 点击穿透（窗口内**本地**键，主入口，默认 Alt+F）。穿透态整窗不可点击
+        # （WS_EX_TRANSPARENT），焦点落到下层程序后本键收不到按键 —— 故另有
+        # 可选的全局救援键 [hotkey_global] through（默认 off）。
+        self._through_hk = _hk("toggle_through", "alt+f")
+        _th_txt = str(cfg.get("hotkey_overlay", "toggle_through",
+                              "alt+f")).strip()
+        self._through_hk_text = ("全局救援键" if self._through_hk is None
+                                 else _th_txt.upper())
         self._shortcut_panel = None
 
         self.boxes = []
@@ -292,7 +301,7 @@ class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
         self._ocr_done = False      # OCR 是否已完成（用于「操作才保存」判定）
         self._pending_save = False  # 用户操作过、等待 OCR 完成后落库
         self._persistent = False   # 持久窗体（历史打开的图）：截图不隐藏、不占贴图配额
-        self._through = False      # 点击穿透（Windows WS_EX_TRANSPARENT，Alt+F 切换）
+        self._through = False      # 点击穿透（Windows WS_EX_TRANSPARENT，窗口内热键切换）
         self._nav_on = False       # 导航图开关（状态栏按钮）：缩略小地图
         self._navigator = None
         self._img_zoom = 1.0       # 窗口内图片缩放系数（Ctrl+滚轮，窗口尺寸不变）
@@ -1255,6 +1264,8 @@ class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
             if not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier
                                      | Qt.ShiftModifier | Qt.MetaModifier)):
                 self._toggle_status_strip()
+        elif self._match_shortcut(e, self._through_hk):
+            self.toggle_through()                   # 点击穿透（窗口内本地键，可配置）
 
     def closeEvent(self, _e):
         # 停掉待触发的「自动进入标注」定时器（set_boxes 排队），避免窗口
@@ -1326,13 +1337,18 @@ class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
             self._border_overlay = None
         # 注意：closed 已在上方（释放资源之前）发出，此处不再重复 emit。
 
-    # ---- 点击穿透（Windows WS_EX_TRANSPARENT，Alt+F 全局热键切换）----
+    # ---- 点击穿透（Windows WS_EX_TRANSPARENT，窗口内热键切换）----
     def toggle_through(self) -> bool:
-        """切换点击穿透：鼠标点击落到桌面（窗口仍可见），Alt+F 可随时取消。
+        """切换点击穿透：鼠标点击落到桌面（窗口仍可见），再按一次取消。
 
         Windows 用 SetWindowLongPtrW 设 WS_EX_TRANSPARENT | WS_EX_LAYERED
         （仅穿透鼠标，不影响显示）；对自身（贴图态）与状态栏钉子（钉图态）
         同时生效，保证钉图后钉子也不挡鼠标。返回当前穿透状态。
+
+        由窗口内本地键触发（[hotkey_overlay] toggle_through，默认 Alt+F）。
+        注意：穿透态下**整窗不可点击**，焦点一旦落到下层程序，本键就收不到
+        按键 —— 这正是可选的全局救援键（[hotkey_global] through，默认 off）
+        存在的唯一理由。
         """
         self._through = not getattr(self, "_through", False)
         if IS_WINDOWS:
@@ -1360,15 +1376,15 @@ class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
                             hwnd, GWL_EXSTYLE, style & ~WS_EX_TRANSPARENT)
             except Exception:                    # noqa: BLE001
                 pass
-        self._set_status("点击穿透开启（Alt+F 取消）" if self._through
-                         else "已取消点击穿透")
+        self._set_status(f"点击穿透开启（{getattr(self, '_through_hk_text', '全局救援键')} 取消）"
+                         if self._through else "已取消点击穿透")
         return self._through
 
     def nativeEvent(self, eventType, message):
         """透明分层窗口（WA_TranslucentBackground → WS_EX_LAYERED）默认会对
         alpha=0 的像素做穿透命中：点击透明处会落到背后程序。非点击穿透模式下，
         对 WM_NCHITTEST 强制返回 HTCLIENT，使整窗（含透明区域）可命中、点击被
-        本窗捕获；点击穿透模式（_through，Alt+F）则放行走默认（WS_EX_TRANSPARENT
+        本窗捕获；点击穿透模式（_through）则放行走默认（WS_EX_TRANSPARENT
         生效，整窗穿透）。
 
         注意：eventType 字符串在不同 PySide6 版本里可能不同，故用 b"windows"

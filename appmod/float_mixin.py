@@ -379,9 +379,12 @@ class FloatMixin:
 
 
     def _toggle_through_top(self):
-        """Alt+F 全局热键：切换最上层可见贴图/钉图窗口的点击穿透。
+        """点击穿透的**全局救援键**（[hotkey_global] through，默认 off = 不注册）：
+        切换最上层可见贴图/钉图窗口的点击穿透。
 
-        穿透时鼠标点击落到桌面（可操作下层程序），窗口仍可见；再按 Alt+F 取消。
+        日常入口是贴图窗口内的本地键（[hotkey_overlay] toggle_through，默认 Alt+F）；
+        本方法只在用户显式启用全局键时才会被热键触发——穿透态窗口整体不可点击，
+        焦点落到下层程序后窗口内热键收不到按键，那时只能靠这个全局键救回。
         """
         # 统一验活过滤：列表中可能残留已销毁引用（防御），isVisible 前必须
         # 先过 _panel_alive（对死对象调 isVisible 会抛 RuntimeError）

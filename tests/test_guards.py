@@ -21,6 +21,7 @@ GUARDS = [
     ("_verify_review_fixes.py", []),
     ("_verify_special_fixes.py", []),
     ("_verify_theme_tokens.py", []),
+    ("_verify_through_hotkey.py", []),
     ("_validate_search.py", []),
     ("_i18n_audit.py", ["--check"]),
     ("_test_theme_apply.py", []),

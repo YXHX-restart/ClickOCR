@@ -588,10 +588,12 @@ class App(EngineMixin, HistoryMixin, DropMixin, FloatMixin, CaptureMixin):
             "hotkey_global", "fullscreen_combo", "off")
         if self.full_combo and self.full_combo.lower() not in ("off", "none", "false"):
             self.hotkey.register_secondary(self.full_combo, self.capture_fullscreen, 3)
-        # 点击穿透全局热键（[hotkey_global] through，默认 alt+f；off 关闭）
-        # 贴图/钉图窗口穿透时鼠标落到桌面，热键随时取消（穿透状态下窗口失焦也有效）
+        # 点击穿透的**全局救援键**（[hotkey_global] through，默认 off = 不注册）。
+        # 主入口是贴图窗口内的本地键（[hotkey_overlay] toggle_through，默认 alt+f）；
+        # 但窗口进入穿透态后整体不可点击（WS_EX_TRANSPARENT），焦点一旦落到下层程序，
+        # 窗口内热键就收不到按键 —— 故保留这个**可选**全局键作救援，由用户显式启用。
         self.through_combo = self.config.get(
-            "hotkey_global", "through", "alt+f")
+            "hotkey_global", "through", "off")
         if self.through_combo and self.through_combo.lower() not in ("off", "none", "false"):
             self.hotkey.register_secondary(self.through_combo,
                                            self._toggle_through_top, 4)

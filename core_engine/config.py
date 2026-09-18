@@ -86,7 +86,10 @@ _DEFAULTS = {
         "screenshot_combo": "ctrl+alt+r",  # 触发截图
         "fullscreen_combo": "off",         # 全屏截图（off = 未启用）
         "history": "ctrl+`",               # 打开历史记录
-        "through": "alt+f",                # 切换贴图/钉图点击穿透
+        # 点击穿透的**全局救援键**：默认 off。主入口是贴图窗口内的本地键
+        # （[hotkey_overlay] toggle_through，默认 alt+f）；仅当用户显式启用本键，
+        # 才会向系统注册全局热键（穿透态窗口不可点击，本地键够不到时用它救回）。
+        "through": "off",
     },
     # ---- 快捷键设置：截图选择（截图遮罩中）----
     "hotkey_select": {
@@ -107,6 +110,7 @@ _DEFAULTS = {
         "toggle_boxes": "w",               # 文字框开关
         "toggle_table": "e",               # 表格开关
         "fav": "f",                        # 收藏截图
+        "toggle_through": "alt+f",         # 点击穿透（窗口内本地键，主入口）
         "copy_shortcut": "shift+c",        # 全复制到剪贴板
         "select_all": "ctrl+a",            # 全选文字（仅选中）
         "copy_selected": "ctrl+c",         # 复制选中文字
