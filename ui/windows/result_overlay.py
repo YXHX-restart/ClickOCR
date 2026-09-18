@@ -264,9 +264,10 @@ class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
         self._boxes_hk = _hk("toggle_boxes", "w")               # 文字框开关（仅本窗口）
         self._tool_table_hk = _hk("toggle_table", "e")          # 表格开关（仅本窗口）
         self._fav_hk = _hk("fav", "f")                          # 收藏当前截图（仅本窗口）
-        # 点击穿透（窗口内**本地**键，主入口，默认 Alt+F）。穿透态整窗不可点击
-        # （WS_EX_TRANSPARENT），焦点落到下层程序后本键收不到按键 —— 故另有
-        # 可选的全局救援键 [hotkey_global] through（默认 off）。
+        # 点击穿透（主入口，默认 Alt+F）。下方按 QShortcut + ApplicationShortcut
+        # 注册，焦点落在本应用的贴图窗口 / 状态栏 / 统一工具栏上都生效；但焦点落到
+        # **其它软件**时收不到 —— 故另有可选的全局救援键
+        # [hotkey_global] through（默认 off）。
         self._through_hk = _hk("toggle_through", "alt+f")
         _th_txt = str(cfg.get("hotkey_overlay", "toggle_through",
                               "alt+f")).strip()
@@ -369,6 +370,18 @@ class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
             self._sc_ratio.setContext(Qt.ApplicationShortcut)
             self._sc_ratio.activated.connect(
                 lambda: self.isActiveWindow() and self._toggle_ratio_lock())
+        # 点击穿透（可配置 [hotkey_overlay] toggle_through，默认 Alt+F）
+        # ApplicationShortcut：焦点落在**本应用的任何窗口**（状态栏 / 统一工具栏 /
+        # 历史面板 / 设置）时同样生效——这才是「窗口内本地键」的完整形态，且**不占用
+        # 系统级热键**。它覆盖不到「焦点在别的软件」，那种场景由可选的全局键
+        # [hotkey_global] through 负责。归属判断 _owns_active_window 防止多贴图
+        # 窗口时一次按键切换全部窗口。
+        self._sc_through = None
+        if _seq(self._through_hk) is not None:
+            self._sc_through = QShortcut(_seq(self._through_hk), self)
+            self._sc_through.setContext(Qt.ApplicationShortcut)
+            self._sc_through.activated.connect(
+                lambda: self._owns_active_window() and self.toggle_through())
 
         # 角标按钮（文字框/标注）与状态文字已分离到独立 StatusStrip 浮层，
         # 图片窗口/scene 只含图片 —— 标注画布天然不含状态栏。
@@ -1146,6 +1159,26 @@ class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
         self.select_all()
         self._do_copy()
 
+    @staticmethod
+    def _is_owner_window(active, overlay, strip, toolbar) -> bool:
+        """活动窗口是否属于该贴图窗口组（本身 / 其状态栏 / 其统一工具栏）。
+
+        抽成纯函数便于断言（不必真去激活窗口）。
+        """
+        return active is not None and active in (overlay, strip, toolbar)
+
+    def _owns_active_window(self) -> bool:
+        """当前活动窗口是否属于本贴图窗口组。
+
+        多贴图窗口时每个实例都注册了应用级快捷键，必须加这层归属判断，否则按一次
+        Alt+F 会同时切换所有窗口的穿透。焦点在历史面板 / 设置 / **其它软件**时一律
+        不响应 —— 「其它软件」那种场景交给可选的全局救援键（[hotkey_global] through）。
+        """
+        return self._is_owner_window(
+            QApplication.activeWindow(), self,
+            getattr(self, "_status_strip", None),
+            getattr(self, "_toolbar", None))
+
     def _match_shortcut(self, e, combo) -> bool:
         """按键事件是否命中该热键。
 
@@ -1264,8 +1297,6 @@ class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
             if not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier
                                      | Qt.ShiftModifier | Qt.MetaModifier)):
                 self._toggle_status_strip()
-        elif self._match_shortcut(e, self._through_hk):
-            self.toggle_through()                   # 点击穿透（窗口内本地键，可配置）
 
     def closeEvent(self, _e):
         # 停掉待触发的「自动进入标注」定时器（set_boxes 排队），避免窗口
@@ -1337,7 +1368,7 @@ class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
             self._border_overlay = None
         # 注意：closed 已在上方（释放资源之前）发出，此处不再重复 emit。
 
-    # ---- 点击穿透（Windows WS_EX_TRANSPARENT，窗口内热键切换）----
+    # ---- 点击穿透（Windows WS_EX_TRANSPARENT，应用级快捷键切换）----
     def toggle_through(self) -> bool:
         """切换点击穿透：鼠标点击落到桌面（窗口仍可见），再按一次取消。
 
@@ -1345,10 +1376,11 @@ class ResultOverlay(TableViewMixin, PinMixin, ZoomNavMixin,
         （仅穿透鼠标，不影响显示）；对自身（贴图态）与状态栏钉子（钉图态）
         同时生效，保证钉图后钉子也不挡鼠标。返回当前穿透状态。
 
-        由窗口内本地键触发（[hotkey_overlay] toggle_through，默认 Alt+F）。
-        注意：穿透态下**整窗不可点击**，焦点一旦落到下层程序，本键就收不到
-        按键 —— 这正是可选的全局救援键（[hotkey_global] through，默认 off）
-        存在的唯一理由。
+        由应用级快捷键触发（[hotkey_overlay] toggle_through，默认 Alt+F，
+        `QShortcut` + `Qt.ApplicationShortcut`）：焦点在贴图窗口、状态栏或统一
+        工具栏上都生效，且**不占用系统热键**。注意：穿透态下**整窗不可点击**，
+        焦点一旦落到**其它软件**，应用级快捷键必然收不到 —— 这正是可选的全局
+        救援键（[hotkey_global] through，默认 off）存在的唯一理由。
         """
         self._through = not getattr(self, "_through", False)
         if IS_WINDOWS:

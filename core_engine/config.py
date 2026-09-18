@@ -86,10 +86,10 @@ _DEFAULTS = {
         "screenshot_combo": "ctrl+alt+r",  # 触发截图
         "fullscreen_combo": "off",         # 全屏截图（off = 未启用）
         "history": "ctrl+`",               # 打开历史记录
-        # 点击穿透的**全局救援键**：默认 off。主入口是贴图窗口内的本地键
-        # （[hotkey_overlay] toggle_through，默认 alt+f）；仅当用户显式启用本键，
-        # 才会向系统注册全局热键（穿透态窗口不可点击，本地键够不到时用它救回）。
-        "through": "off",
+        # 点击穿透的**全局键**（默认 Ctrl+Alt+F）：应用级快捷键只能覆盖本应用窗口
+        # （贴图窗口 / 状态栏 / 统一工具栏），焦点在**其它软件**时必须靠全局键。
+        # 刻意不用 Alt+F —— 那是 Windows 多数程序的「文件」菜单助记键，全局占用代价过大。
+        "through": "ctrl+alt+f",
     },
     # ---- 快捷键设置：截图选择（截图遮罩中）----
     "hotkey_select": {

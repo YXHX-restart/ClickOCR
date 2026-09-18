@@ -192,15 +192,16 @@ class HotkeyTabMixin:
                    "copy_image", "ctrl+shift+c")
         add_hk_row("hk.copy_raw_image", "复制原图", "hotkey_overlay",
                    "copy_raw_image", "ctrl+alt+c")
-        # 点击穿透的**全局救援键**（默认 off = 不注册）：主入口是「贴图窗口」组内的
-        # 本地键 toggle_through。穿透态整窗不可点击，焦点落到下层程序后本地键收不到
-        # 按键，此时才需要这个可选的全局键救回。必须接 apply——原先只写 config，
-        # 改键保存后新键不注册（重启才生效）、改 off 后旧键仍活着
+        # 点击穿透的**全局键**（默认 Ctrl+Alt+F）：必须接 apply——原先只写 config，
+        # 改键保存后新键不注册（重启才生效）、改 off 后旧键仍活着。
+        # 应用级快捷键（上方「贴图窗口」组的 toggle_through）只覆盖本应用窗口，
+        # 焦点在**其它软件**时只有这个全局键能收到；刻意不用 Alt+F（Windows 多数
+        # 程序的「文件」菜单助记键）。
         apply_through = self._secondary_apply(
-            4, "hotkey_global", "through", "点击穿透（全局救援）",
+            4, "hotkey_global", "through", "点击穿透（全局键）",
             hint="ctrl+alt+f")
-        _row("hk.through", "点击穿透（全局救援）", "hotkey_global",
-             "through", "off", apply=apply_through)
+        _row("hk.through", "点击穿透（全局键）", "hotkey_global",
+             "through", "ctrl+alt+f", apply=apply_through)
 
         # 图片缩放修饰键（[hotkey_overlay] zoom_modifier，非按键行，用下拉）
         self.combo_zoom_mod = QComboBox()
