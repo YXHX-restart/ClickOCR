@@ -1,0 +1,376 @@
+
+#HistoryPanel, #SettingsPanel, #ShortcutPanel, #ColorPickerDialog, #StatusStrip, #ToolBar, #TablePreviewPanel, #PinCard, #ThemeDialog { color: #ffffff; font-size: 13px; }
+
+/* 无边框半透明卡片（三个工具面板共用，历史面板同款；底色随主题，见 panel_card_bg） */
+#HistoryPanel #card, #SettingsPanel #card, #ShortcutPanel #card, #ColorPickerDialog #card, #StatusStrip #card, #ToolBar #card, #TablePreviewPanel #card, #PinCard #card, #ThemeDialog #card {
+    background: rgba(28,28,30,238);
+    border-radius: 10px;
+}
+
+/* ---- 标签 ---- */
+#HistoryPanel QLabel, #SettingsPanel QLabel, #ShortcutPanel QLabel, #ColorPickerDialog QLabel, #StatusStrip QLabel, #ToolBar QLabel, #TablePreviewPanel QLabel, #PinCard QLabel, #ThemeDialog QLabel { color: #ffffff; background: transparent; }
+#HistoryPanel QLabel[kind='title'], #SettingsPanel QLabel[kind='title'], #ShortcutPanel QLabel[kind='title'], #ColorPickerDialog QLabel[kind='title'], #StatusStrip QLabel[kind='title'], #ToolBar QLabel[kind='title'], #TablePreviewPanel QLabel[kind='title'], #PinCard QLabel[kind='title'], #ThemeDialog QLabel[kind='title'] { font-size: 15px; font-weight: bold; color: #ffffff; }
+#HistoryPanel QLabel[kind='group'], #SettingsPanel QLabel[kind='group'], #ShortcutPanel QLabel[kind='group'], #ColorPickerDialog QLabel[kind='group'], #StatusStrip QLabel[kind='group'], #ToolBar QLabel[kind='group'], #TablePreviewPanel QLabel[kind='group'], #PinCard QLabel[kind='group'], #ThemeDialog QLabel[kind='group'] { font-size: 12px; font-weight: bold; color: #8ab4ff; }
+#SettingsPanel QLabel[kind='info'] { font-size: 11px; color: #cccccc; }
+#HistoryPanel QLabel[kind='text'] { color: #ffffff; }
+#HistoryPanel QLabel[kind='info'] { font-size: 11px; color: #cccccc; }
+#HistoryPanel QLabel[kind='empty'] { color: #777777; }
+#HistoryPanel QLabel[kind='thumb'] {
+    background: rgba(255,255,255,20); border: 1px solid rgba(255,255,255,40);
+    border-radius: 4px; color: #777777;
+}
+#ShortcutPanel QLabel[kind='key'] { color: #ffd54f; font-family: Consolas; }
+#ShortcutPanel QLabel[kind='desc'] { color: #cccccc; }
+
+/* ---- 历史列表 ---- */
+#HistoryPanel #grouphead { background: rgba(138,180,255,26); border-radius: 5px; }
+#HistoryPanel #row { background: rgba(255,255,255,20); border-radius: 6px; }
+#HistoryPanel #row:hover { background: rgba(255,255,255,45); }
+#HistoryPanel #row[selected="true"] { border: 1px solid #8ab4ff; background: rgba(138,180,255,45); }
+
+/* ---- 输入框 ---- */
+#HistoryPanel QLineEdit, #SettingsPanel QLineEdit, #ShortcutPanel QLineEdit, #ColorPickerDialog QLineEdit, #StatusStrip QLineEdit, #ToolBar QLineEdit, #TablePreviewPanel QLineEdit, #PinCard QLineEdit, #ThemeDialog QLineEdit {
+    background: rgba(255,255,255,26); border: 1px solid rgba(255,255,255,40);
+    border-radius: 6px; padding: 4px 8px; color: #ffffff;
+}
+#HistoryPanel QLineEdit:focus, #SettingsPanel QLineEdit:focus, #ShortcutPanel QLineEdit:focus, #ColorPickerDialog QLineEdit:focus, #StatusStrip QLineEdit:focus, #ToolBar QLineEdit:focus, #TablePreviewPanel QLineEdit:focus, #PinCard QLineEdit:focus, #ThemeDialog QLineEdit:focus { border-color: #8ab4ff; }
+
+/* ---- 按钮 ---- */
+#HistoryPanel QPushButton, #SettingsPanel QPushButton, #ShortcutPanel QPushButton, #ColorPickerDialog QPushButton, #StatusStrip QPushButton, #ToolBar QPushButton, #TablePreviewPanel QPushButton, #PinCard QPushButton, #ThemeDialog QPushButton {
+    background: rgba(255,255,255,26); border: none; border-radius: 6px;
+    padding: 5px 12px; color: #ffffff;
+}
+#HistoryPanel QPushButton:hover, #SettingsPanel QPushButton:hover, #ShortcutPanel QPushButton:hover, #ColorPickerDialog QPushButton:hover, #StatusStrip QPushButton:hover, #ToolBar QPushButton:hover, #TablePreviewPanel QPushButton:hover, #PinCard QPushButton:hover, #ThemeDialog QPushButton:hover { background: rgba(255,255,255,45); }
+#HistoryPanel QPushButton[kind='fav'], #SettingsPanel QPushButton[kind='fav'], #ShortcutPanel QPushButton[kind='fav'], #ColorPickerDialog QPushButton[kind='fav'], #StatusStrip QPushButton[kind='fav'], #ToolBar QPushButton[kind='fav'], #TablePreviewPanel QPushButton[kind='fav'], #PinCard QPushButton[kind='fav'], #ThemeDialog QPushButton[kind='fav'] {
+    padding: 0; font-size: 20px; color: #ffd54f;
+    background: transparent; border-radius: 0;
+}
+#HistoryPanel QPushButton[kind='fav']:hover, #SettingsPanel QPushButton[kind='fav']:hover, #ShortcutPanel QPushButton[kind='fav']:hover, #ColorPickerDialog QPushButton[kind='fav']:hover, #StatusStrip QPushButton[kind='fav']:hover, #ToolBar QPushButton[kind='fav']:hover, #TablePreviewPanel QPushButton[kind='fav']:hover, #PinCard QPushButton[kind='fav']:hover, #ThemeDialog QPushButton[kind='fav']:hover { color: #ffe082; background: transparent; }
+#ToolBar QPushButton[kind='pin'] {
+    padding: 0; font-size: 20px; color: #ffd54f;
+    background: transparent; border: none; border-radius: 0;
+}
+#ToolBar QPushButton[kind='pin']:hover,
+#ToolBar QPushButton[kind='pin']:checked { color: #ffe082; background: transparent; }
+#StatusStrip QPushButton[kind='lock'] {
+    padding: 0; font-size: 14px; color: #cccccc;      
+    background: transparent; border: none; border-radius: 0;
+}
+#StatusStrip QPushButton[kind='lock']:hover { color: #ffffff; background: transparent; }
+#StatusStrip QPushButton[kind='lock']:checked { color: #ffffff; }  
+/* 锁定 ● 白 */
+#HistoryPanel QPushButton[kind='del'], #SettingsPanel QPushButton[kind='del'], #ShortcutPanel QPushButton[kind='del'], #ColorPickerDialog QPushButton[kind='del'], #StatusStrip QPushButton[kind='del'], #ToolBar QPushButton[kind='del'], #TablePreviewPanel QPushButton[kind='del'], #PinCard QPushButton[kind='del'], #ThemeDialog QPushButton[kind='del'] {
+    padding: 0; font-size: 13px; color: #ff9e9e; background: transparent;
+}
+#HistoryPanel QPushButton[kind='del']:hover, #SettingsPanel QPushButton[kind='del']:hover, #ShortcutPanel QPushButton[kind='del']:hover, #ColorPickerDialog QPushButton[kind='del']:hover, #StatusStrip QPushButton[kind='del']:hover, #ToolBar QPushButton[kind='del']:hover, #TablePreviewPanel QPushButton[kind='del']:hover, #PinCard QPushButton[kind='del']:hover, #ThemeDialog QPushButton[kind='del']:hover { background: rgba(255,158,158,40); }
+#HistoryPanel QPushButton[kind='close'], #SettingsPanel QPushButton[kind='close'], #ShortcutPanel QPushButton[kind='close'], #ColorPickerDialog QPushButton[kind='close'], #StatusStrip QPushButton[kind='close'], #ToolBar QPushButton[kind='close'], #TablePreviewPanel QPushButton[kind='close'], #PinCard QPushButton[kind='close'], #ThemeDialog QPushButton[kind='close'] {
+    padding: 0 8px; font-size: 14px; color: #cccccc; background: transparent;
+}
+#HistoryPanel QPushButton[kind='close']:hover, #SettingsPanel QPushButton[kind='close']:hover, #ShortcutPanel QPushButton[kind='close']:hover, #ColorPickerDialog QPushButton[kind='close']:hover, #StatusStrip QPushButton[kind='close']:hover, #ToolBar QPushButton[kind='close']:hover, #TablePreviewPanel QPushButton[kind='close']:hover, #PinCard QPushButton[kind='close']:hover, #ThemeDialog QPushButton[kind='close']:hover {
+    color: #ffffff; background: rgba(255,255,255,45);
+}
+#HistoryPanel QPushButton[kind='spinner'], #SettingsPanel QPushButton[kind='spinner'], #ShortcutPanel QPushButton[kind='spinner'], #ColorPickerDialog QPushButton[kind='spinner'], #StatusStrip QPushButton[kind='spinner'], #ToolBar QPushButton[kind='spinner'], #TablePreviewPanel QPushButton[kind='spinner'], #PinCard QPushButton[kind='spinner'], #ThemeDialog QPushButton[kind='spinner'] {
+    padding: 0; font-size: 9px; border-radius: 3px; color: #cccccc;
+    background: rgba(255,255,255,26);
+}
+#HistoryPanel QPushButton[kind='spinner']:hover, #SettingsPanel QPushButton[kind='spinner']:hover, #ShortcutPanel QPushButton[kind='spinner']:hover, #ColorPickerDialog QPushButton[kind='spinner']:hover, #StatusStrip QPushButton[kind='spinner']:hover, #ToolBar QPushButton[kind='spinner']:hover, #TablePreviewPanel QPushButton[kind='spinner']:hover, #PinCard QPushButton[kind='spinner']:hover, #ThemeDialog QPushButton[kind='spinner']:hover {
+    background: rgba(255,255,255,45); color: #ffffff;
+}
+
+/* ---- 复选框（软件/UI 设置）---- */
+#HistoryPanel QCheckBox, #SettingsPanel QCheckBox, #ShortcutPanel QCheckBox, #ColorPickerDialog QCheckBox, #StatusStrip QCheckBox, #ToolBar QCheckBox, #TablePreviewPanel QCheckBox, #PinCard QCheckBox, #ThemeDialog QCheckBox {
+    color: #ffffff; background: transparent; spacing: 6px;
+}
+#HistoryPanel QCheckBox::indicator, #SettingsPanel QCheckBox::indicator, #ShortcutPanel QCheckBox::indicator, #ColorPickerDialog QCheckBox::indicator, #StatusStrip QCheckBox::indicator, #ToolBar QCheckBox::indicator, #TablePreviewPanel QCheckBox::indicator, #PinCard QCheckBox::indicator, #ThemeDialog QCheckBox::indicator {
+    width: 14px; height: 14px; border-radius: 3px;
+    border: 1px solid rgba(255,255,255,90);
+    background: rgba(255,255,255,26);
+}
+#HistoryPanel QCheckBox::indicator:hover, #SettingsPanel QCheckBox::indicator:hover, #ShortcutPanel QCheckBox::indicator:hover, #ColorPickerDialog QCheckBox::indicator:hover, #StatusStrip QCheckBox::indicator:hover, #ToolBar QCheckBox::indicator:hover, #TablePreviewPanel QCheckBox::indicator:hover, #PinCard QCheckBox::indicator:hover, #ThemeDialog QCheckBox::indicator:hover { border-color: #8ab4ff; }
+#HistoryPanel QCheckBox::indicator:checked, #SettingsPanel QCheckBox::indicator:checked, #ShortcutPanel QCheckBox::indicator:checked, #ColorPickerDialog QCheckBox::indicator:checked, #StatusStrip QCheckBox::indicator:checked, #ToolBar QCheckBox::indicator:checked, #TablePreviewPanel QCheckBox::indicator:checked, #PinCard QCheckBox::indicator:checked, #ThemeDialog QCheckBox::indicator:checked {
+    background: #3d6de0; border-color: #3d6de0;
+    image: url("__CHECK__");
+}
+
+/* ---- 滑块（设置面板：图片质量等，样式同线宽浮层）---- */
+#SettingsPanel QSlider::groove:horizontal {
+    height: 4px; background: rgba(255,255,255,60); border-radius: 2px;
+}
+#SettingsPanel QSlider::sub-page:horizontal {
+    background: #3d6de0; border-radius: 2px;
+}
+#SettingsPanel QSlider::handle:horizontal {
+    width: 14px; margin: -5px 0; border-radius: 7px; background: #fff;
+}
+
+/* ---- 标注工具区（统一工具栏标注态展开，跟随主题：暗色）---- */
+#ToolBar #anno_tools QPushButton {
+    background: rgba(255,255,255,26); border: none; border-radius: 5px;
+    padding: 4px 9px; color: #cccccc; font-size: 14px;
+}
+#ToolBar #anno_tools QPushButton[tool] {
+    font-size: 14px; padding: 0; min-width: 24px; min-height: 24px;
+}
+#ToolBar #anno_tools QPushButton:hover { background: rgba(255,255,255,45); }
+#ToolBar #anno_tools QPushButton:checked { background: #3d6de0; color: #fff; }
+#ToolBar #anno_tools QLabel { color: #cccccc; font-size: 14px; }
+#ToolBar #anno_tools QSpinBox {
+    background: rgba(255,255,255,26); border: 1px solid rgba(255,255,255,90);
+    border-radius: 4px; color: #ffffff; padding: 1px 4px;
+}
+#ToolBar #anno_tools QSpinBox::up-button,
+#ToolBar #anno_tools QSpinBox::down-button {
+    width: 14px; background: rgba(255,255,255,20);
+    border: none; border-radius: 2px;
+}
+#ToolBar #anno_tools QFontComboBox {
+    background: rgba(255,255,255,26); border: 1px solid rgba(255,255,255,90);
+    border-radius: 4px; color: #ffffff; padding: 1px 4px;
+}
+#ToolBar #anno_tools QFontComboBox QAbstractItemView {
+    background: rgba(255,255,255,20); color: #ffffff; border: 1px solid rgba(255,255,255,40);
+    selection-background-color: rgba(138,180,255,45);
+}
+/* 统一工具栏右下角拉伸手柄（自绘斜线，透明底） */
+#StatusStrip #resize_grip { background: transparent; }
+
+/* ---- 截图浮窗角标按钮（画布工具：固定深色，白图上也可读，不随明暗主题）---- */
+#ResultOverlay QPushButton[kind='corner'],
+#ToolBar QPushButton[kind='corner'],
+#SettingsPanel QPushButton[kind='corner'],
+#HistoryPanel QPushButton[kind='corner'] {
+    background: rgba(30,30,32,205); color: #eee;
+    border: 1px solid rgba(255,255,255,70); border-radius: 5px;
+    padding: 3px 10px; font-size: 12px;
+}
+#ResultOverlay QPushButton[kind='corner']:hover,
+#ToolBar QPushButton[kind='corner']:hover,
+#SettingsPanel QPushButton[kind='corner']:hover,
+#HistoryPanel QPushButton[kind='corner']:hover { background: rgba(55,55,60,220); }
+#ResultOverlay QPushButton[kind='corner']:checked,
+#ToolBar QPushButton[kind='corner']:checked,
+#SettingsPanel QPushButton[kind='corner']:checked,
+#HistoryPanel QPushButton[kind='corner']:checked {
+    background: #3d6de0; color: #fff; border-color: #5b8cff;
+}
+
+/* ---- 快捷键修饰键（紧凑：无勾选框、纯文字，选中高亮）---- */
+#SettingsPanel QCheckBox[kind='keymod'] {
+    spacing: 0; padding: 2px 4px; border-radius: 4px; color: #cccccc;
+    background: transparent;
+}
+#SettingsPanel QCheckBox[kind='keymod']::indicator {
+    width: 0; height: 0; border: none;
+}
+#SettingsPanel QCheckBox[kind='keymod']:checked {
+    background: rgba(138,180,255,45); color: #ffffff; border-radius: 4px;
+}
+
+/* ---- 图片浮窗右上角圆形关闭按钮（固定深色半透明，白图上也可见）---- */
+#overlay_close {
+    background: rgba(30,30,32,190); color: #fff;
+    border: none; border-radius: 16px;
+    font-size: 15px; padding: 0;
+}
+#overlay_close:hover {
+    background: #e04444; color: #000;
+}
+#overlay_close:pressed {
+    background: #b93a3a; color: #000;
+}
+
+/* ---- 钉图圆形钉子（固定深色半透明，白图上也可见）---- */
+#pin_badge_btn {
+    background: rgba(30,30,32,190); color: #ffd54f;
+    border: 1px solid rgba(255,255,255,60); border-radius: 16px;
+    font-size: 22px; padding: 0;
+}
+#pin_badge_btn:hover {
+    background: rgba(55,55,60,220); color: #ffe082;
+}
+
+/* ---- 下拉 / 数值 ---- */
+#SettingsPanel QComboBox {
+    background: rgba(255,255,255,26); border: 1px solid rgba(255,255,255,40);
+    border-radius: 6px; padding: 4px 8px; color: #ffffff;
+}
+#SettingsPanel QComboBox QAbstractItemView {
+    background: rgba(255,255,255,20); color: #ffffff; border: 1px solid rgba(255,255,255,40);
+    selection-background-color: rgba(138,180,255,45);
+}
+#SettingsPanel QSpinBox {
+    background: rgba(255,255,255,26); border: 1px solid rgba(255,255,255,40);
+    border-radius: 6px; padding: 2px 6px; color: #ffffff;
+}
+
+/* ---- 下拉箭头（主题化，替代系统原生）---- */
+#SettingsPanel QComboBox::drop-down,
+#ToolBar #anno_tools QFontComboBox::drop-down {
+    subcontrol-origin: padding; subcontrol-position: top right;
+    width: 18px; border: none;
+    border-left: 1px solid rgba(255,255,255,40);
+    background: rgba(255,255,255,20);
+    border-top-right-radius: 5px; border-bottom-right-radius: 5px;
+}
+#SettingsPanel QComboBox::down-arrow,
+#ToolBar #anno_tools QFontComboBox::down-arrow {
+    image: url("__COMBO_ARROW__");
+}
+
+/* ---- 标注子选项浮层内的滑块（音量条样式）----    滑块位于四个在用的标注浮层内；此前这些浮层没有 QSlider 规则，    滑块呈系统原生浅色外观、不随明暗主题切换 */
+#FontPopup QSlider::groove:horizontal, #MosaicModePopup QSlider::groove:horizontal, #ToolOptionsPopup QSlider::groove:horizontal, #NumPopup QSlider::groove:horizontal {
+    height: 4px; background: rgba(255,255,255,60); border-radius: 2px;
+}
+#FontPopup QSlider::sub-page:horizontal, #MosaicModePopup QSlider::sub-page:horizontal, #ToolOptionsPopup QSlider::sub-page:horizontal, #NumPopup QSlider::sub-page:horizontal {
+    background: #3d6de0; border-radius: 2px;
+}
+#FontPopup QSlider::handle:horizontal, #MosaicModePopup QSlider::handle:horizontal, #ToolOptionsPopup QSlider::handle:horizontal, #NumPopup QSlider::handle:horizontal {
+    width: 14px; margin: -5px 0; border-radius: 7px; background: #fff;
+}
+
+/* ---- 字体选择浮层（点「文字」工具弹出）---- */
+#FontPopup #font_card { background: rgba(28,28,30,238); border-radius: 6px; }
+#FontPopup QLabel { color: #cccccc; font-size: 11px; }
+#FontPopup QFontComboBox {
+    background: rgba(255,255,255,26); border: 1px solid rgba(255,255,255,90);
+    border-radius: 4px; color: #ffffff; padding: 1px 4px;
+}
+#FontPopup QFontComboBox QAbstractItemView {
+    background: rgba(255,255,255,20); color: #ffffff; border: 1px solid rgba(255,255,255,40);
+    selection-background-color: rgba(138,180,255,45);
+}
+#FontPopup QComboBox {
+    background: rgba(255,255,255,26); border: 1px solid rgba(255,255,255,90);
+    border-radius: 4px; color: #ffffff; padding: 1px 4px;
+}
+#FontPopup QComboBox QAbstractItemView {
+    background: rgba(255,255,255,20); color: #ffffff; border: 1px solid rgba(255,255,255,40);
+    selection-background-color: rgba(138,180,255,45);
+}
+#FontPopup QPushButton {
+    background: rgba(255,255,255,26); border: 1px solid rgba(255,255,255,90);
+    border-radius: 4px; color: #ffffff; font-size: 12px;
+}
+#FontPopup QPushButton:hover { background: rgba(255,255,255,45); }
+#FontPopup QPushButton:checked { background: #3d6de0; color: #fff; }
+
+/* ---- 马赛克模式选择浮层 ---- */
+#MosaicModePopup #mosaic_card { background: rgba(28,28,30,238); border-radius: 6px; }
+#ToolOptionsPopup #tool_options_card { background: rgba(28,28,30,238); border-radius: 6px; }
+#ToolOptionsPopup QLabel, #FontPopup #font_card QLabel, #MosaicModePopup #mosaic_card QLabel { color: #cccccc; font-size: 12px; }
+#ToolOptionsPopup QPushButton {
+    background: rgba(255,255,255,26); border: none; border-radius: 5px;
+    padding: 0;
+}
+#ToolOptionsPopup QPushButton:hover { background: rgba(255,255,255,45); }
+#ToolOptionsPopup QPushButton:checked { background: #3d6de0; }
+#MosaicModePopup QPushButton {
+    background: rgba(255,255,255,26); border: none; border-radius: 5px;
+    padding: 5px 14px; color: #cccccc; font-size: 12px;
+}
+#MosaicModePopup QPushButton:hover { background: rgba(255,255,255,45); }
+#MosaicModePopup QPushButton:checked { background: #3d6de0; color: #fff; }
+
+/* ---- 序号选项浮层（起始序号 + 颜色/大小）---- */
+#NumPopup #num_card { background: rgba(28,28,30,238); border-radius: 6px; }
+#NumPopup QLabel { color: #cccccc; font-size: 12px; }
+#NumPopup QPushButton {
+    background: rgba(255,255,255,26); border: none; border-radius: 5px;
+    padding: 0;
+}
+#NumPopup QPushButton:hover { background: rgba(255,255,255,45); }
+#NumPopup QPushButton:checked { background: #3d6de0; }
+#NumPopup QSpinBox {
+    background: rgba(255,255,255,26); border: 1px solid rgba(255,255,255,90);
+    border-radius: 4px; color: #ffffff; padding: 1px 4px;
+}
+#NumPopup QSpinBox::up-button, #NumPopup QSpinBox::down-button {
+    width: 14px; background: rgba(255,255,255,20);
+    border: none; border-radius: 2px;
+}
+
+/* ---- Tab ---- */
+#SettingsPanel QTabWidget::pane { border: none; background: transparent; }
+#HistoryPanel QTabWidget::pane { border: none; background: transparent; }
+#SettingsPanel QTabBar::tab {
+    background: transparent; color: #cccccc; padding: 7px 18px;
+    border-bottom: 2px solid transparent;
+}
+#SettingsPanel QTabBar::tab:selected { color: #ffffff; border-bottom: 2px solid #8ab4ff; }
+#SettingsPanel QTabBar::tab:hover { color: #ffffff; }
+#HistoryPanel QTabBar::tab {
+    background: transparent; color: #cccccc; padding: 7px 18px;
+    border-bottom: 2px solid transparent;
+}
+#HistoryPanel QTabBar::tab:selected { color: #ffffff; border-bottom: 2px solid #8ab4ff; }
+#HistoryPanel QTabBar::tab:hover { color: #ffffff; }
+
+/* ---- 列表滚动条 ---- */
+#HistoryPanel QListWidget { background: transparent; border: none; }
+#HistoryPanel QListWidget::item { border: none; background: transparent; }
+#HistoryPanel QListWidget::item:selected {
+    background: rgba(138,180,255,45); border-radius: 6px;
+}
+#HistoryPanel QScrollBar:vertical {
+    background: transparent; width: 8px; margin: 2px;
+}
+#HistoryPanel QScrollBar::handle:vertical {
+    background: rgba(255,255,255,60); border-radius: 4px; min-height: 24px;
+}
+#HistoryPanel QScrollBar::add-line:vertical,
+#HistoryPanel QScrollBar::sub-line:vertical { height: 0; }
+#HistoryPanel QScrollBar::add-page:vertical,
+#HistoryPanel QScrollBar::sub-page:vertical { background: transparent; }
+
+/* ---- 表格（TablePreviewPanel）暗色 ---- */
+#TablePreviewPanel QTableWidget {
+    background: rgba(0,0,0,60); border: 1px solid rgba(255,255,255,40);
+    border-radius: 6px; color: #ffffff; gridline-color: rgba(255,255,255,28);
+    selection-background-color: #3d6de0; selection-color: #ffffff;
+}
+#TablePreviewPanel QTableWidget::item { padding: 4px 8px; border: none; }
+#TablePreviewPanel QTableWidget::item:selected {
+    background: rgba(138,180,255,45); color: #ffffff; border-radius: 3px;
+}
+#TablePreviewPanel QHeaderView::section {
+    background: rgba(255,255,255,20); color: #cccccc;
+    border: none; border-right: 1px solid rgba(255,255,255,40);
+    border-bottom: 1px solid rgba(255,255,255,40); padding: 5px 8px;
+}
+#TablePreviewPanel QTableCornerButton::section {
+    background: rgba(255,255,255,20); border: none;
+}
+#TablePreviewPanel QScrollBar:vertical {
+    background: transparent; width: 8px; margin: 2px;
+}
+#TablePreviewPanel QScrollBar::handle:vertical {
+    background: rgba(255,255,255,60); border-radius: 4px; min-height: 24px;
+}
+#TablePreviewPanel QScrollBar::add-line:vertical,
+#TablePreviewPanel QScrollBar::sub-line:vertical { height: 0; }
+#TablePreviewPanel QScrollBar::add-page:vertical,
+#TablePreviewPanel QScrollBar::sub-page:vertical { background: transparent; }
+/* 统一工具栏：常驻按钮文字/标志统一字号（覆盖共享 corner/pin/fav 规则） */
+#ToolBar QPushButton[kind='corner'] { font-size: 14px; }
+#ToolBar QPushButton[kind='pin'] { font-size: 14px; }
+#ToolBar QPushButton[kind='fav'] { font-size: 14px; }
+
+/* ---- 设置面板滚动区（快捷键 tab）---- */
+#SettingsPanel QScrollArea { background: transparent; border: none; }
+#SettingsPanel QScrollBar:vertical { background: transparent; width: 8px; margin: 0; }
+#SettingsPanel QScrollBar::handle:vertical { background: rgba(255,255,255,60); border-radius: 4px; min-height: 30px; }
+#SettingsPanel QScrollBar::handle:vertical:hover { background: rgba(255,255,255,100); }
+#SettingsPanel QScrollBar::add-line:vertical, #SettingsPanel QScrollBar::sub-line:vertical { height: 0; }
+#SettingsPanel QScrollBar::add-page:vertical, #SettingsPanel QScrollBar::sub-page:vertical { background: transparent; }
+
+
+/* ---- 禁用态 ----
+   QSS 一旦给控件设了 color，QPalette 的 Disabled 组就被覆盖（Qt 官方行为），
+   因此禁用态必须显式声明，否则禁用控件看起来和可用的一模一样。 */
+#HistoryPanel QPushButton:disabled, #SettingsPanel QPushButton:disabled, #ShortcutPanel QPushButton:disabled, #ColorPickerDialog QPushButton:disabled, #StatusStrip QPushButton:disabled, #ToolBar QPushButton:disabled, #TablePreviewPanel QPushButton:disabled, #PinCard QPushButton:disabled, #ThemeDialog QPushButton:disabled { color: #777777; }
+#HistoryPanel QToolButton:disabled, #SettingsPanel QToolButton:disabled, #ShortcutPanel QToolButton:disabled, #ColorPickerDialog QToolButton:disabled, #StatusStrip QToolButton:disabled, #ToolBar QToolButton:disabled, #TablePreviewPanel QToolButton:disabled, #PinCard QToolButton:disabled, #ThemeDialog QToolButton:disabled { color: #777777; }
+#HistoryPanel QLabel:disabled, #SettingsPanel QLabel:disabled, #ShortcutPanel QLabel:disabled, #ColorPickerDialog QLabel:disabled, #StatusStrip QLabel:disabled, #ToolBar QLabel:disabled, #TablePreviewPanel QLabel:disabled, #PinCard QLabel:disabled, #ThemeDialog QLabel:disabled { color: #777777; }
+#HistoryPanel QLineEdit:disabled, #SettingsPanel QLineEdit:disabled, #ShortcutPanel QLineEdit:disabled, #ColorPickerDialog QLineEdit:disabled, #StatusStrip QLineEdit:disabled, #ToolBar QLineEdit:disabled, #TablePreviewPanel QLineEdit:disabled, #PinCard QLineEdit:disabled, #ThemeDialog QLineEdit:disabled { color: #777777; }
+#HistoryPanel QComboBox:disabled, #SettingsPanel QComboBox:disabled, #ShortcutPanel QComboBox:disabled, #ColorPickerDialog QComboBox:disabled, #StatusStrip QComboBox:disabled, #ToolBar QComboBox:disabled, #TablePreviewPanel QComboBox:disabled, #PinCard QComboBox:disabled, #ThemeDialog QComboBox:disabled { color: #777777; }
+#HistoryPanel QCheckBox:disabled, #SettingsPanel QCheckBox:disabled, #ShortcutPanel QCheckBox:disabled, #ColorPickerDialog QCheckBox:disabled, #StatusStrip QCheckBox:disabled, #ToolBar QCheckBox:disabled, #TablePreviewPanel QCheckBox:disabled, #PinCard QCheckBox:disabled, #ThemeDialog QCheckBox:disabled { color: #777777; }
+#HistoryPanel QSpinBox:disabled, #SettingsPanel QSpinBox:disabled, #ShortcutPanel QSpinBox:disabled, #ColorPickerDialog QSpinBox:disabled, #StatusStrip QSpinBox:disabled, #ToolBar QSpinBox:disabled, #TablePreviewPanel QSpinBox:disabled, #PinCard QSpinBox:disabled, #ThemeDialog QSpinBox:disabled { color: #777777; }

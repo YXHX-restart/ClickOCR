@@ -39,3 +39,7 @@ scripts/_*.png
 
 # 项目状态数据（记忆/会话等，不入库）
 .workbuddy/
+
+# 历史归档与落地页：本地保留（冻结溯源），不入库
+docs/archive/
+/index.html

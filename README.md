@@ -6,7 +6,6 @@
 OCR 引擎：**RapidOCR（ONNX Runtime，PP-OCRv6）**，全程零网络请求，数据不出本机。
 
 > 本文档是项目的**唯一权威文档**（产品定义 / 功能 / 架构 / 数据模型 / 配置 / 开发构建 / 里程碑）。
-> 历史设计稿与开发日志已归档至 [docs/archive/](docs/archive/)，仅供溯源，不再维护。
 
 ---
 
@@ -72,7 +71,7 @@ OCR 引擎：**RapidOCR（ONNX Runtime，PP-OCRv6）**，全程零网络请求�
 - **钉图（Pin）**：截图/历史图置顶桌面、上限可调（默认 3 / 硬上限 20）、长按收起、双击切换、可拖动带图；点击穿透（应用级 `Alt+F` + 全局 `Ctrl+Alt+F` 双入口）
 - **标注工具**：8 种（选择 / 序号 / 箭头 / 画笔 / 直线 / 矩形 / 马赛克 / 文字），每工具多样式（如矩形 7 种）；参数浮层（样式/颜色/线宽/字号）；撤销重做栈 ≤500（命令模式）；JSON 持久化（旧版本打开新标注优雅降级）
 - **表格识别**：SLANet 模型（~6.8MB 内置）→ 表格面板 + Excel / Markdown / TSV 导出（openpyxl）
-- **二维码识别**：zxing-cpp，`kind="qr"` 并入 OcrBox，`[QR]` 前缀行入库（存储定稿见 [docs/archive/M2+++最终修改版-QR存储定稿.md](docs/archive/M2+++最终修改版-QR存储定稿.md)）
+- **二维码识别**：zxing-cpp，`kind="qr"` 并入 OcrBox，`[QR]` 前缀行入库
 - **历史记录**：sqlite-vec + FTS5 预置、6 Tab（全部/图/字/码/标/收藏）、日期分组、收藏（不占 FIFO）、关键词搜索、可拉伸记忆尺寸、多选拖拽、拖入导入去重 + 串行补 OCR
 - **UI**：明暗双主题跟随系统、全局微软雅黑、快捷键 27 项全可配置（全局/截图/贴图/标注四组）、统一工具栏（常态/标注态两态内联展开）+ 纯信息状态条、UI 文字 JSON 表（346 条）
 - **打包**：PyInstaller onedir、DML 通用版 / CUDA 版双线、开机自启（winreg HKCU Run）、资源/数据分离
@@ -281,7 +280,7 @@ pip install -r requirements.txt
 
 回归首跑建议先跑 `scripts\_test_ocr_chain.py`（配置实时读取 / `@property` 冲突静态检测 / `restore_record` 门控 / 落库三态 / 执行记录语义等 6 组断言）。
 
-> 注：`scripts/` 下有一批需要**真桌面 + 人眼判断**或外部输入的脚本，断言不了「看起来对不对」，仍需手跑：`_test_pin_*.py`、`_test_restore*.py`、`_test_popup_close.py`、`_test_qr_btn_visibility.py`、`_test_num_badge.py`、`_test_select_tool.py`、`_test_text_tool.py`、`_test_anno_text_edit.py`、`_test_table_lines.py <图片>`、`_smoke_packaged.py`、`_bench_*.py`、`_spec_probe.py`（需先跑一次基线 `build/_spec_before.json`）。
+> 注：`scripts/_smoke_packaged.py` 是打包产物的冒烟脚本（启动 + 初始化 + 加速档位），断言不了「看起来对不对」，需打包后手跑。其余需要真桌面目测的一次性 UI 调试脚本不入库。
 
 ---
 
@@ -373,8 +372,6 @@ onnxruntime 的 gpu 包与 directml 包在 PyPI 上互斥，必须分 venv、分
 | 首次启动智能推荐 + 新手引导 | 📋 远期 | 硬件检测推荐模型档位 + 3 步引导 |
 | 剪贴板图片粘贴（Ctrl+V） | 📋 远期 | — |
 
-完整需求原文见 [docs/archive/需求说明-v0.2.md](docs/archive/需求说明-v0.2.md) §4。
-
 ---
 
 ## 13. 目录结构
@@ -402,12 +399,11 @@ ClickOCR/
 │   ├── config.ini           # 出厂配置模板（只读；首次运行复制到可写位置）
 │   └── ui_text.json         # UI 文字表（346 条）
 ├── config.ini               # 实际生效的用户配置（dev 在仓库根；打包在 exe 同目录）
-├── scripts/                 # 开发期验证脚本（断言守卫 / UI 冒烟 / 基准）
+├── scripts/                 # 断言守卫（CI 回归）+ 打包脚本与产物冒烟
 ├── tests/                   # 离线回归测试
 └── docs/
     ├── assets/              # 引用资产（系统架构图等）
-    ├── architecture/        # 架构图 HTML/JSON
-    └── archive/             # 历史文档归档（仅供溯源）
+    └── architecture/        # 架构图 HTML/JSON
 ```
 
 ---
@@ -418,4 +414,3 @@ ClickOCR/
 
 - [docs/assets/系统架构图.html](docs/assets/系统架构图.html) — 交互式系统架构图
 - [docs/architecture/clickocr-architecture.html](docs/architecture/clickocr-architecture.html) — 架构总览（配套 JSON）
-- [docs/archive/](docs/archive/) — 历史归档：需求说明、系统架构设计 v3.1、统一工具栏方案、M1–M3 里程碑与开发日志/计划、QR 存储定稿、代码评审记录等（内容已吸收进本 README，不再维护）
