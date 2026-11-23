@@ -23,6 +23,10 @@
 exe 同级的 `config.ini` 都是**运行期在 exe 旁**生成的用户数据。它们若出现在刚打好的
 产物里，说明打包前那个目录被运行过 —— 等于把本机状态当发布包发出去。
 
+流水线顺序：**校验 → 冒烟 → 移出运行期文件 → 归档**。冒烟会真的启 exe，于是必然
+在产物目录里留下 `config.ini` / `clickocr.db` / `logs/`；归档必须排在冒烟之后并把它们
+搬走（`stash_smoke_residue`，用移动而非删除），否则打出来的 zip 里装的就是本机状态。
+
 用法
 ----
     .venv-dml\\Scripts\\python.exe scripts\\build_package.py dml
@@ -34,7 +38,10 @@ exe 同级的 `config.ini` 都是**运行期在 exe 旁**生成的用户数据�
     --zip        额外产出免安装分发包 dist/ClickOCR_<档位>-<版本>-<日期>.zip
     --smoke      出包校验通过后，调用 scripts/_smoke_packaged.py 做启动冒烟
     --no-clean   保留上一份产物（默认先删除，保证「可重复执行」语义）
-    --keep-work  保留 PyInstaller 的 build 工作目录（排查用）
+    --clean-work 连 build/<档位> 工作目录一并清空（默认保留：它是 PyInstaller 的
+                 增量缓存，删掉只是把下一次打包变慢，不解决任何正确性问题）
+    --workpath P 指定工作目录（默认 build/<档位>）；指向空目录可让 PyInstaller
+                 全程只创建不覆盖，适用于 CI 与带删除护栏的环境
 
 退出码
 ------
@@ -94,7 +101,9 @@ FLAVORS: dict[str, dict] = {
     },
 }
 
-#: 发布包里**不应该**出现的东西：全部由运行期在 exe 旁生成（属本机/个人状态）
+#: 发布包里**不应该**出现的东西：全部由运行期在 exe 旁生成（属本机/个人状态）。
+#: 匹配时会一并带上 `名字-后缀`，因为 SQLite 的旁挂文件叫 `clickocr.db-wal` /
+#: `clickocr.db-shm`（库名是 `*.db` 而它们不是），只对比全名会漏掉。
 FORBIDDEN_IN_RELEASE = ("clickocr.db", "config.ini", "logs", "screenshots", "thumb")
 
 #: 必须齐备的 resources 子项（缺一则 OCR/二维码/多语言必坏）
@@ -199,8 +208,27 @@ def preflight(flavor: dict) -> bool:
 
 # ---------------------------------------------------------------- 清理 / 打包
 
-def clean(flavor: dict, keep_work: bool) -> None:
-    """删除上一份同名产物与工作目录 —— 这是「可重复执行」的前提。"""
+def work_dir_of(flavor: dict, override: str | None) -> Path:
+    """PyInstaller 的工作目录。`--workpath` 可为 CI / 隔离构建指定独立目录。
+
+    独立工作目录还有一个实际用途：它的内容是**每次构建都会重写**的中间件，
+    指向一个空目录即可让 PyInstaller 全程只创建、不覆盖，这在带删除护栏的
+    环境里是唯一能跑完整条流水线的姿势（见 `--no-clean` 的说明）。
+    """
+    if override:
+        p = Path(override)
+        return p if p.is_absolute() else (ROOT / p)
+    return WORK_ROOT / flavor["out_name"]
+
+
+def clean(flavor: dict, clean_work: bool, work: Path) -> None:
+    """删除上一份同名产物 —— 这是「可重复执行」的前提。
+
+    刻意**不动** build/<档位>：那是 PyInstaller 的增量缓存，留着只是下次更快，
+    删掉不改变任何正确性（PyInstaller 每次都会重跑 Analysis 并重写有变化的条目）。
+    反过来，无脑清缓存会原地制造一次数百文件的批量删除，在有删除护栏的环境里
+    直接卡住构建 —— 收益为负。需要绝对干净的构建时用 `--clean-work`。
+    """
     say("[2/6] 清理旧产物")
     out = DIST / flavor["out_name"]
     if out.exists():
@@ -208,17 +236,24 @@ def clean(flavor: dict, keep_work: bool) -> None:
         say("     已删除 %s" % rel(out))
     else:
         say("     无需删除（%s 不存在）" % rel(out))
-    if TMP_DIST.exists():
-        shutil.rmtree(TMP_DIST, ignore_errors=True)
-    work = WORK_ROOT / flavor["out_name"]
-    if keep_work:
-        say("     --keep-work：保留 %s" % rel(work))
-    elif work.exists():
+    if (TMP_DIST / flavor["collect_name"]).exists():
+        shutil.rmtree(TMP_DIST / flavor["collect_name"], ignore_errors=True)
+        say("     已删除上次遗留的临时产出")
+    elif TMP_DIST.exists():
+        say("     临时目录 %s 已存在（空目录，复用）" % rel(TMP_DIST))
+    # 同档位的旧分发包一并清掉：失败的构建也会留下一个看起来完整的 zip，
+    # 攒在 dist/ 里迟早被误当成成品发出去。zip 随包可再生，删了没有信息损失。
+    for old_zip in sorted(DIST.glob(flavor["out_name"] + "-*.zip")):
+        old_zip.unlink()
+        say("     已删除旧分发包 %s" % rel(old_zip))
+    if clean_work and work.exists():
         shutil.rmtree(work, ignore_errors=True)
-        say("     已删除工作目录 %s" % rel(work))
+        say("     --clean-work：已清空工作目录 %s" % rel(work))
+    else:
+        say("     保留工作目录 %s（增量缓存；需要绝对干净加 --clean-work）" % rel(work))
 
 
-def build(flavor: dict) -> bool:
+def build(flavor: dict, work: Path) -> bool:
     """执行 PyInstaller。产物先落在临时 distpath，稍后搬运。"""
     say("[3/6] PyInstaller 打包（onedir，可能数分钟）")
     TMP_DIST.mkdir(parents=True, exist_ok=True)
@@ -226,7 +261,7 @@ def build(flavor: dict) -> bool:
         sys.executable, "-m", "PyInstaller", flavor["spec"],
         "--noconfirm",
         "--distpath", str(TMP_DIST),
-        "--workpath", str(WORK_ROOT / flavor["out_name"]),
+        "--workpath", str(work),
     ]
     say("     $ %s" % " ".join(cmd))
     t0 = time.time()
@@ -253,7 +288,9 @@ def relocate(flavor: dict) -> Path:
         return dst
     DIST.mkdir(parents=True, exist_ok=True)
     shutil.move(str(src), str(dst))
-    shutil.rmtree(TMP_DIST, ignore_errors=True)
+    # 搬运后 TMP_DIST 已空，**不删**：主程序刻意不在构建路径上做任何删除动作，
+    # 以便在带批量删除护栏的环境里整条流程能无人值守跑完（空目录下次构建会复用，
+    # 真正需要清理时交给 clean()）。
     say("     %s -> %s" % (rel(src), rel(dst)))
     return dst
 
@@ -322,14 +359,59 @@ def verify(flavor: dict, out: Path) -> bool:
         say("     该档位 spec 不覆写 ocr_device，期望沿用模板值：%s" % want)
     ok &= check("产物内 ocr_device == %s" % want, accel == want, "实际 %s" % accel)
 
-    # ⑤ 发布包里不该有本机状态
-    leaked = [n for n in FORBIDDEN_IN_RELEASE if (out / n).exists()]
+    # ⑤ spec 声明的每一条 datas 是否**逐项**落进了产物
+    #    这是本轮新增项，针对的是一类具体病史：PyInstaller 不自动收包目录里的非 .py
+    #    文件，`ui/base/themes.toml` 漏收时构建退出码仍为 0，直到双击 exe 才崩。
+    #    条目直接从 spec_common 读（单一真源），spec 里加了、这里就会自动跟着查。
+    declared = declared_data_entries()
+    missing = []
+    for src, dest in declared:
+        src_abs = Path(src)
+        if not src_abs.is_absolute():
+            src_abs = ROOT / src_abs
+        probe = (internal / dest) if src_abs.is_dir() else (internal / dest / src_abs.name)
+        if not probe.exists():
+            missing.append("%s -> %s" % (src, dest))
+    ok &= check("spec 声明的 datas 全部落位（%d 项）" % len(declared),
+                bool(declared) and not missing, ", ".join(missing[:4]) or "齐备")
+
+    # ⑥ 发布包里不该有本机状态
+    leaked = residue_in(out)
     ok &= check("未混入本机运行数据", not leaked, ", ".join(leaked) or "干净")
 
     say("     产物体积 %.0f MB，%s" % (dir_size_mb(out), rel(out)))
     if exe.is_file():
         say("     主程序 %.1f MB" % (exe.stat().st_size / 1048576))
     return bool(ok)
+
+
+def residue_in(out: Path) -> list[str]:
+    """产物目录里的运行期残留（含 SQLite 的 `-wal` / `-shm` 旁挂文件）。"""
+    if not out.is_dir():
+        return []
+    return sorted(
+        p.name for p in out.iterdir()
+        if any(p.name == f or p.name.startswith(f + "-") for f in FORBIDDEN_IN_RELEASE)
+    )
+
+
+def declared_data_entries() -> list[tuple[str, str]]:
+    """从 spec_common 读出 spec 实际声明的 datas，作为校验的单一真源。
+
+    刻意**不**在脚本里维护第二份清单：spec 加了条目而校验没加，正是
+    `ui/base/themes.toml` 漏收能溜过去的原因（构建期没有任何东西回查产物）。
+    读不到时返回空表并提示 —— 缺 PyInstaller 不该阻断构建，但会让这一项失效。
+    """
+    try:
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        import spec_common
+        entries = list(spec_common.resource_datas())
+        entries += list(spec_common.PACKAGE_DATA_FILES)
+        return [(str(s), str(d)) for s, d in entries]
+    except Exception as e:                                  # noqa: BLE001
+        say("     无法读取 spec_common 的 datas 声明（本项跳过）：%r" % e)
+        return []
 
 
 def read_template_ocr_device() -> str:
@@ -364,8 +446,36 @@ def make_zip(flavor: dict, out: Path) -> Path | None:
     return path
 
 
+def stash_smoke_residue(flavor: dict, out: Path) -> bool:
+    """把冒烟跑出来的运行期文件**移出**产物目录，返回产物目录是否已干净。
+
+    冒烟会真的把 exe 启起来，而程序按设计在 exe 旁建 `config.ini` / `clickocr.db` /
+    `logs/` / `screenshots/` / `thumb/` —— 都是「本机状态」，绝不能进发布包。
+    流程是「校验 → 冒烟 → 归档」，所以不处理的话，被打进 zip 的恰好就是这些文件。
+
+    这里用**移动**而不是删除：搬走就已经干净了，而删除在带护栏的环境里会被拦。
+    打包流程不该依赖「能删文件」这个前提 —— 这是本脚本第三次因为删除动作卡住的教训。
+    """
+    leftover = residue_in(out)
+    if not leftover:
+        say("     冒烟未留下运行期文件，产物目录干净")
+        return True
+    stash = WORK_ROOT / "_smoke_residue" / ("%s-%s" % (flavor["out_name"],
+                                                        time.strftime("%H%M%S")))
+    try:
+        stash.mkdir(parents=True, exist_ok=True)
+        for name in leftover:
+            shutil.move(str(out / name), str(stash / name))
+    except OSError as e:
+        say("     !! 移出失败：%r" % e)
+        return False
+    say("     冒烟产生的运行期文件已移出产物：%s" % ", ".join(leftover))
+    say("     已存放到 %s（保留供排查，可直接删）" % rel(stash))
+    return not residue_in(out)
+
+
 def run_smoke(flavor: dict, out: Path) -> bool:
-    say("[6/6] 启动冒烟（scripts/_smoke_packaged.py）")
+    say("     启动冒烟：scripts/_smoke_packaged.py（真启 exe，约 35s）")
     smoke = ROOT / "scripts" / "_smoke_packaged.py"
     if not smoke.is_file():
         say("     跳过：未找到 %s" % rel(smoke))
@@ -388,7 +498,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--zip", action="store_true", help="额外产出免安装分发包 zip")
     ap.add_argument("--smoke", action="store_true", help="出包后跑启动冒烟")
     ap.add_argument("--no-clean", action="store_true", help="保留上一份产物（默认先删）")
-    ap.add_argument("--keep-work", action="store_true", help="保留 build 工作目录")
+    ap.add_argument("--clean-work", action="store_true",
+                    help="连 build 工作目录一并清空（默认保留其作为增量缓存）")
+    ap.add_argument("--workpath", default=None,
+                    help="PyInstaller 工作目录（默认 build/<档位>）")
     args = ap.parse_args(argv)
 
     flavor = FLAVORS[args.flavor]
@@ -401,25 +514,39 @@ def main(argv: list[str] | None = None) -> int:
         say("\n预检未通过，未开始打包。")
         return 1
 
+    work = work_dir_of(flavor, args.workpath)
     if not args.no_clean:
-        clean(flavor, args.keep_work)
+        clean(flavor, args.clean_work, work)
     else:
         say("[2/6] 清理旧产物  --no-clean：跳过")
 
-    if not build(flavor):
+    if not build(flavor, work):
         say("\n打包失败（详见上方 PyInstaller 输出）。")
         return 1
 
     out = relocate(flavor)
     verified = verify(flavor, out)
+    say("[6/6] 冒烟与归档")
 
-    if args.zip and verified:
-        make_zip(flavor, out)
-    elif args.zip:
-        say("     跳过 --zip：出包校验未通过，不产出分发包。")
-
+    # 顺序刻意是「校验 -> 冒烟 -> 归档」：冒烟会真的把 exe 启起来，能抓到静态校验
+    # 抓不到的启动期缺陷（如包内数据文件漏收）。若先归档再冒烟，一次失败构建也会
+    # 在 dist/ 里留下一个「看起来完整」的 zip。
+    smoked = True
+    clean_after_smoke = True
     if args.smoke and verified:
-        run_smoke(flavor, out)
+        smoked = run_smoke(flavor, out)
+        if smoked:
+            # 冒烟跑过就会在产物目录里留下 config.ini / clickocr.db / logs/ ...
+            # 归档前必须把它们移走，否则发布包里带的是本机状态。
+            clean_after_smoke = stash_smoke_residue(flavor, out)
+    elif args.smoke:
+        say("     跳过 --smoke：出包校验未通过。")
+
+    if args.zip:
+        if verified and smoked and clean_after_smoke:
+            make_zip(flavor, out)
+        else:
+            say("     跳过 --zip：校验 / 冒烟 / 产物洁净度未通过，不产出分发包。")
 
     say("=" * 66)
     if _failures:

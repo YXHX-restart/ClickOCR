@@ -58,9 +58,22 @@ _CUDA_BIN_PATTERNS = (
 )
 
 
+#: 包目录里的**非 .py 数据文件** —— PyInstaller 只按导入关系收集 .py 与原生库，
+#: `ui/base/` 这类包目录里的 .toml/.json 一律不会自动带上，必须在 datas 里显式声明。
+#: 漏收的代价是「打包成功、运行即崩」：2026-09-17 配色收敛为 themes.toml 单真源后，
+#: `theme.py` 用 `Path(__file__)` 同目录读取它，而 spec 没跟上 —— PyInstaller 退出码
+#: 仍是 0，缺陷要等到有人双击 exe 才暴露（2026-09-18 由 `scripts/build_package.py
+#: --smoke` 抓出）。
+#: 新增「__file__ 同目录读取」的数据文件时，**必须**在这里登记；
+#: `scripts/build_package.py` 会拿本表逐项回查产物，登记了就不会再漏。
+PACKAGE_DATA_FILES = (
+    ("ui/base/themes.toml", "ui/base"),
+)
+
+
 def resource_datas(config_entry: str = "resources/config.ini",
                    whole_dir: bool = False) -> list:
-    """resources 的 datas 项。
+    """resources 的 datas 项（含 `PACKAGE_DATA_FILES` 登记的包内数据文件）。
 
     `whole_dir=True`（gpu）：整目录打包。
     否则只打用到的子项（排除 resources/models 里已失效的 v3 回退模型）。
@@ -70,13 +83,14 @@ def resource_datas(config_entry: str = "resources/config.ini",
     `config_entry` 允许 dml spec 换成「已覆写 ocr_device 的临时副本」。
     """
     if whole_dir:
-        return [("resources", "resources")]
+        return [("resources", "resources"), *PACKAGE_DATA_FILES]
     return [
         ("resources/icons", "resources/icons"),
         ("resources/models_v6", "resources/models_v6"),
         (config_entry, "resources"),
         ("resources/ui_text.json", "resources"),
         ("resources/PP-OCRv6_models_manifest.txt", "resources"),
+        *PACKAGE_DATA_FILES,
     ]
 
 
