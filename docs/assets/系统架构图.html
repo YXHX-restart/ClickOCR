@@ -396,13 +396,13 @@
     </div>
     <div class="card">
       <h4><span class="dot" style="background:#cf222e"></span>钉图与穿透</h4>
-      <p><span class="tag t-red">Alt+F</span></p>
+      <p><span class="tag t-red">Alt+F / Ctrl+Alt+F</span></p>
       <ul>
         <li>钉图：图片保留 + 状态栏/工具栏隐藏</li>
         <li>右下角 PinDot 钉子（32×32）</li>
         <li>钉图移出 <code>_overlays</code> 独立配额</li>
-        <li>Alt+F 全局切换点击穿透</li>
-        <li>穿透时鼠标落到桌面，热键仍可取消</li>
+        <li>Alt+F 切换点击穿透（应用级快捷键：贴图窗口/状态栏/工具栏内有效）</li>
+        <li>Ctrl+Alt+F 全局键：焦点在其它软件时也能切换穿透</li>
       </ul>
     </div>
   </div>
@@ -414,7 +414,7 @@
 <!-- ============ 4. 数据模型 ============ -->
 <section>
   <h2>四、数据模型（SQLite）</h2>
-  <p class="lead">建库时一次性建齐 11 张表 + 1 张 vec0 虚表。当前仅 <code>screenshot_history</code> 在实际使用，其余为 M3–M6 预置。</p>
+  <p class="lead">建库时一次性建齐 11 张表 + 1 张 vec0 虚表。当前仅 <code>screenshot_history</code> 在实际使用，其余为空转预置（未启用）。</p>
 
   <div class="panel" style="margin-bottom:14px">
     <div style="font-size:13.5px;font-weight:700;margin-bottom:10px">在用表：<code>screenshot_history</code> 的两个关键语义约定</div>
@@ -490,12 +490,12 @@
         </tr>
         <tr>
           <td><code>image_embedding</code></td>
-          <td><span class="tag t-purple">M6 预置</span></td>
-          <td>向量元数据，每图两条：<code>image</code>（CLIP 图向量）/ <code>text</code>（BGE 文本向量）。唯一约束 (image_id, entry_type, model)</td>
+          <td><span class="tag t-purple">未启用</span></td>
+          <td>向量元数据（预留，未启用）</td>
         </tr>
         <tr>
           <td><code>image_embedding_vec</code></td>
-          <td><span class="tag t-purple">M6 · vec0</span></td>
+          <td><span class="tag t-purple">vec0 · 未启用</span></td>
           <td>sqlite-vec 虚表 <code>vec0(embedding float[512])</code>。按扩展可用性在 Python 层动态创建，缺失则降级跳过</td>
         </tr>
         <tr>
@@ -568,7 +568,7 @@
     </div>
     <div class="card">
       <h4><span class="dot" style="background:#8250df"></span>加加速后端</h4>
-      <p>在 <code>DEVICE_PKG</code> / <code>PKG_INSTALL</code> / <code>_EP_HINT</code> 三张表登记即可，UI 自动出现选项（<code>available_devices()</code> 不过滤未装项，保留用户选中后触发检测/安装）。</p>
+      <p>在 <code>DEVICE_PKG</code> / <code>_EP_HINT</code> 两张表登记即可，UI 自动出现选项（<code>available_devices()</code> 不过滤未装项，保留用户选中后触发检测）。</p>
     </div>
     <div class="card">
       <h4><span class="dot" style="background:#1a7f37"></span>加标注图元</h4>
@@ -580,7 +580,7 @@
     </div>
     <div class="card">
       <h4><span class="dot" style="background:#096b68"></span>数据层前瞻</h4>
-      <p>建库即建齐 11 表 + vec0，M3/M4/M6 <b>不需要 schema 迁移</b>：图库、去重、语义检索的落点均已预留。</p>
+      <p>建库即建齐 11 表 + vec0，后续 <b>不需要 schema 迁移</b>：图库与去重的落点均已预留。</p>
     </div>
     <div class="card">
       <h4><span class="dot" style="background:#cf222e"></span>缺口：热键无抽象</h4>
@@ -786,7 +786,7 @@
 
 <footer>
   ClickOCR 系统架构图 · 依据 E:\WorkSpace\ClickOCR 实际源码绘制 · 2026-09-10（对应设计文档 v3.0）<br>
-  源码规模：98 个模块 / 20,725 行 · 配套：<code>docs/design/系统架构设计.md</code>
+  源码规模：98 个模块 / 20,725 行 · 权威文档：<code>README.md</code>（设计稿已归档 <code>docs/archive/系统架构设计.md</code>）
 </footer>
 
 </div>

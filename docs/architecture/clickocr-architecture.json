@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "ClickOCR 系统架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase"
+  },
+  "layout": {
+    "mode": "grid",
+    "cols": 4,
+    "cellW": 176,
+    "cellH": 62,
+    "gapX": 58,
+    "gapY": 44
+  },
+  "components": [
+    {
+      "id": "tray_hotkey",
+      "type": "frontend",
+      "label": "托盘 + 全局热键",
+      "sublabel": "HotkeyHost · 热键",
+      "row": 0,
+      "col": 0
+    },
+    {
+      "id": "selection",
+      "type": "frontend",
+      "label": "框选遮罩",
+      "sublabel": "SelectionOverlay",
+      "row": 0,
+      "col": 1
+    },
+    {
+      "id": "shot_service",
+      "type": "backend",
+      "label": "抓屏服务",
+      "sublabel": "mss · 每线程一实例",
+      "row": 0,
+      "col": 2
+    },
+    {
+      "id": "single_instance",
+      "type": "security",
+      "label": "单实例 IPC",
+      "sublabel": "QLocalServer",
+      "row": 2,
+      "col": 0
+    },
+    {
+      "id": "app_core",
+      "type": "backend",
+      "label": "App 装配体",
+      "sublabel": "5 Mixin · 主线程",
+      "row": 1,
+      "col": 1
+    },
+    {
+      "id": "overlay",
+      "type": "frontend",
+      "label": "贴图窗口",
+      "sublabel": "ResultOverlay · 10 信号",
+      "row": 1,
+      "col": 2
+    },
+    {
+      "id": "storage",
+      "type": "database",
+      "label": "历史存储",
+      "sublabel": "SQLite · 截图 + 缩略图",
+      "row": 3,
+      "col": 0
+    },
+    {
+      "id": "save_queue",
+      "type": "messagebus",
+      "label": "落库队列",
+      "sublabel": "主线程门面 · FIFO",
+      "row": 2,
+      "col": 1
+    },
+    {
+      "id": "workers",
+      "type": "messagebus",
+      "label": "常驻工作线程",
+      "sublabel": "3 常驻 + 5 一次性",
+      "row": 2,
+      "col": 2
+    },
+    {
+      "id": "ocr_engine",
+      "type": "backend",
+      "label": "OCR 引擎",
+      "sublabel": "PP-OCRv6 · 单例 · 双锁",
+      "row": 2,
+      "col": 3
+    },
+    {
+      "id": "ort_runtime",
+      "type": "backend",
+      "label": "推理后端探测",
+      "sublabel": "CUDA / DML / CPU 落位",
+      "row": 3,
+      "col": 3
+    }
+  ],
+  "boundaries": [],
+  "connections": [
+    {
+      "id": "hotkey-trigger",
+      "from": "tray_hotkey",
+      "to": "app_core",
+      "label": "WM_HOTKEY / 菜单信号",
+      "variant": "emphasis"
+    },
+    {
+      "id": "second-instance",
+      "from": "single_instance",
+      "to": "app_core",
+      "label": "ping 唤起截图",
+      "variant": "security"
+    },
+    {
+      "id": "start-capture",
+      "from": "app_core",
+      "to": "selection",
+      "label": "start_capture()"
+    },
+    {
+      "id": "grab",
+      "from": "selection",
+      "to": "shot_service",
+      "label": "grab_region()"
+    },
+    {
+      "id": "frame-back",
+      "from": "shot_service",
+      "to": "app_core",
+      "label": "BGR 帧"
+    },
+    {
+      "id": "make-overlay",
+      "from": "app_core",
+      "to": "overlay",
+      "label": "建窗 · 回填",
+      "labelDy": -24,
+      "labelDx": -48
+    },
+    {
+      "id": "submit-ocr",
+      "from": "overlay",
+      "to": "workers",
+      "label": "OcrWorker 单槽提交",
+      "labelDy": 24
+    },
+    {
+      "id": "infer",
+      "from": "workers",
+      "to": "ocr_engine",
+      "label": "持锁串行"
+    },
+    {
+      "id": "done-back",
+      "from": "workers",
+      "to": "app_core",
+      "label": "done 回主线程"
+    },
+    {
+      "id": "save",
+      "from": "app_core",
+      "to": "save_queue",
+      "label": "_save_record → submit()",
+      "labelDy": 24
+    },
+    {
+      "id": "persist",
+      "from": "save_queue",
+      "to": "storage",
+      "label": "HistoryStorage"
+    },
+    {
+      "id": "record-actual",
+      "from": "ocr_engine",
+      "to": "ort_runtime",
+      "label": "record_actual() 落位回报",
+      "variant": "dashed",
+      "labelDy": 24
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "常驻线程是正确性要求",
+      "items": [
+        "3 个常驻 QThread 而非通用线程池：OcrWorker 单槽只认最新图，HistorySaveWorker FIFO 不合并",
+        "ONNX Runtime CUDA EP 的线程资源不随线程退出回收，旧实现每次截图新建线程导致显存累积至 8G",
+        "SQLite 连接是 threading.local，QThread 必须在 run() 收尾显式释放"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "资源与数据分离",
+      "items": [
+        "打包态 res_root 指向只读 _MEIPASS，data_root 指向 exe 同级可写目录",
+        "截图与缩略图落盘到 data_root，数据库只存文件名不存路径，避免自定义目录时磁盘泄漏",
+        "模型随包分发，运行时零网络下载"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "唯一跨进程边界",
+      "items": [
+        "第二实例经 QLocalSocket 发 ping 后立即退出，首实例监听并唤起截图",
+        "接收端校验 payload 才动作，避免把「触发截图」暴露给任意本地进程",
+        "不是 CreateMutex，而是 Qt 本地套接字抽象；两端同属一份代码的两次实例"
+      ]
+    }
+  ]
+}
